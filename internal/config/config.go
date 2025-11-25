@@ -38,8 +38,9 @@ type LogConfig struct {
 
 // AuthConfig содержит настройки авторизации пользователей
 type AuthConfig struct {
-	Enabled bool
-	Tokens  []string
+	Enabled          bool
+	Tokens           []string
+	AllowedUsersFile string
 }
 
 // Load загружает конфигурацию из переменных окружения
@@ -61,8 +62,9 @@ func Load() (*Config, error) {
 			Level: getEnv("LOG_LEVEL", "info"),
 		},
 		Auth: AuthConfig{
-			Enabled: getEnvAsBool("AUTH_ENABLED", false),
-			Tokens:  splitAndTrim(getEnv("AUTH_TOKENS", "")),
+			Enabled:          getEnvAsBool("AUTH_ENABLED", false),
+			Tokens:           splitAndTrim(getEnv("AUTH_TOKENS", "")),
+			AllowedUsersFile: getEnv("AUTH_ALLOWED_USERS_FILE", "./allowed_users.txt"),
 		},
 	}
 
