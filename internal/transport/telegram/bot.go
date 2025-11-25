@@ -34,7 +34,8 @@ func NewBot(
 		return nil, fmt.Errorf("failed to create bot API: %w", err)
 	}
 
-	handler := NewHandler(api, logger, downloader, authService, maxVideoSizeMB, workerCount)
+	botUsername := api.Self.UserName
+	handler := NewHandler(api, botUsername, logger, downloader, authService, maxVideoSizeMB, workerCount)
 
 	ctx, cancel := context.WithCancel(context.Background())
 

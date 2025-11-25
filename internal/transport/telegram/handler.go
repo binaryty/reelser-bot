@@ -17,6 +17,7 @@ import (
 // Handler обрабатывает входящие сообщения от Telegram
 type Handler struct {
 	bot            *tgbotapi.BotAPI
+	botUsername    string
 	logger         *zap.Logger
 	downloader     *downloader.Service
 	auth           *auth.Service
@@ -39,6 +40,7 @@ type downloadRequest struct {
 // NewHandler создает новый обработчик Telegram
 func NewHandler(
 	bot *tgbotapi.BotAPI,
+	botUsername string,
 	logger *zap.Logger,
 	downloader *downloader.Service,
 	authService *auth.Service,
@@ -52,6 +54,7 @@ func NewHandler(
 	queueSize := workerCount * 2
 	handler := &Handler{
 		bot:            bot,
+		botUsername:    botUsername,
 		logger:         logger,
 		downloader:     downloader,
 		auth:           authService,
@@ -100,7 +103,16 @@ func (h *Handler) handleMessage(ctx context.Context, message *tgbotapi.Message) 
 		zap.Int64("chat_id", chatID),
 		zap.Int64("user_id", userID),
 		zap.String("text", message.Text),
+		zap.String("chat_type", message.Chat.Type),
 	)
+
+	// В группах и супергруппах бот должен быть упомянут
+	if message.Chat.Type == "group" || message.Chat.Type == "supergroup" {
+		if !h.isBotMentioned(message) {
+			// Игнорируем сообщения без упоминания бота в группах
+			return
+		}
+	}
 
 	// Проверка авторизации
 	if h.auth != nil && h.auth.IsEnabled() && !h.auth.IsAuthorized(userID) {
@@ -153,6 +165,17 @@ func (h *Handler) handleCommand(ctx context.Context, message *tgbotapi.Message) 
 func (h *Handler) handleTextMessage(ctx context.Context, message *tgbotapi.Message) {
 	chatID := message.Chat.ID
 	text := strings.TrimSpace(message.Text)
+
+	if message.Chat != nil && (message.Chat.Type == "group" || message.Chat.Type == "supergroup") {
+		if !h.isBotMentioned(message) {
+			return
+		}
+
+		text = strings.TrimSpace(h.removeBotMentionFromText(text))
+		if text == "" {
+			return
+		}
+	}
 
 	if !h.containsURL(text) {
 		h.sendMessage(chatID, "❌ Пожалуйста, отправь валидную ссылку на видео.")
@@ -288,7 +311,8 @@ func (h *Handler) deleteOriginalMessage(req *downloadRequest) {
 func (h *Handler) handleAuthFlow(ctx context.Context, message *tgbotapi.Message) {
 	chatID := message.Chat.ID
 	userID := int64(message.From.ID)
-	text := strings.TrimSpace(message.Text)
+
+	text := h.removeBotMentionFromText(message.Text)
 
 	// Если это команда или пустое сообщение — просто просим отправить токен
 	if text == "" || message.IsCommand() {
@@ -427,6 +451,49 @@ func (h *Handler) maxAllowedFileSize() int64 {
 		return telegramLimit
 	}
 	return h.maxVideoSize
+}
+
+// isBotMentioned проверяет, упомянут ли бот в сообщении
+func (h *Handler) isBotMentioned(message *tgbotapi.Message) bool {
+	if h.botUsername == "" {
+		return false
+	}
+
+	// Проверяем entities (упоминания через @username)
+	if len(message.Entities) > 0 {
+		for _, entity := range message.Entities {
+			if entity.Type == "mention" {
+				mention := message.Text[entity.Offset : entity.Offset+entity.Length]
+				// Убираем @ и сравниваем
+				if strings.TrimPrefix(mention, "@") == h.botUsername {
+					return true
+				}
+			}
+		}
+	}
+
+	// Также проверяем текст напрямую (на случай, если entities не сработали)
+	text := strings.ToLower(message.Text)
+	botMention := "@" + strings.ToLower(h.botUsername)
+	return strings.Contains(text, botMention)
+}
+
+func (h *Handler) removeBotMentionFromText(text string) string {
+	if h.botUsername == "" {
+		return text
+	}
+
+	target := "@" + strings.ToLower(h.botUsername)
+	words := strings.Fields(text)
+	cleaned := make([]string, 0, len(words))
+	for _, word := range words {
+		if strings.ToLower(word) == target {
+			continue
+		}
+		cleaned = append(cleaned, word)
+	}
+
+	return strings.Join(cleaned, " ")
 }
 
 // containsURL проверяет, содержит ли текст URL
