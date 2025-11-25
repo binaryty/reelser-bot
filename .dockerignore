@@ -1,0 +1,14 @@
+.git
+.gitignore
+tmp
+bin
+dist
+vendor
+.env
+env
+*.log
+*.mp4
+.vscode
+.idea
+node_modules
+

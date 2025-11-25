@@ -1,0 +1,524 @@
+package telegram
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/reelser-bot/internal/services/auth"
+	"github.com/reelser-bot/internal/services/downloader"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"go.uber.org/zap"
+)
+
+// Handler обрабатывает входящие сообщения от Telegram
+type Handler struct {
+	bot            *tgbotapi.BotAPI
+	logger         *zap.Logger
+	downloader     *downloader.Service
+	auth           *auth.Service
+	maxVideoSize   int64 // в байтах
+	downloadQueue  chan *downloadRequest
+	workerCount    int
+	queueSizeLimit int
+}
+
+type downloadRequest struct {
+	ctx             context.Context
+	cancel          context.CancelFunc
+	chatID          int64
+	url             string
+	statusMessageID int
+	source          string
+	originalMessage int
+}
+
+// NewHandler создает новый обработчик Telegram
+func NewHandler(
+	bot *tgbotapi.BotAPI,
+	logger *zap.Logger,
+	downloader *downloader.Service,
+	authService *auth.Service,
+	maxVideoSizeMB int,
+	workerCount int,
+) *Handler {
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+
+	queueSize := workerCount * 2
+	handler := &Handler{
+		bot:            bot,
+		logger:         logger,
+		downloader:     downloader,
+		auth:           authService,
+		maxVideoSize:   int64(maxVideoSizeMB) * 1024 * 1024, // конвертируем в байты
+		workerCount:    workerCount,
+		queueSizeLimit: queueSize,
+		downloadQueue:  make(chan *downloadRequest, queueSize),
+	}
+
+	handler.startWorkers()
+
+	return handler
+}
+
+func (h *Handler) startWorkers() {
+	for i := 0; i < h.workerCount; i++ {
+		workerID := i + 1
+		go func(id int) {
+			h.logger.Info("Download worker started", zap.Int("worker_id", id))
+			for req := range h.downloadQueue {
+				h.processDownload(req)
+			}
+		}(workerID)
+	}
+}
+
+// HandleUpdate обрабатывает обновление от Telegram
+func (h *Handler) HandleUpdate(ctx context.Context, update tgbotapi.Update) {
+	switch {
+	case update.Message != nil:
+		h.handleMessage(ctx, update.Message)
+	case update.InlineQuery != nil:
+		h.handleInlineQuery(ctx, update.InlineQuery)
+	case update.ChosenInlineResult != nil:
+		h.handleChosenInlineResult(ctx, update.ChosenInlineResult)
+	default:
+		// Игнорируем остальные типы обновлений
+	}
+}
+
+func (h *Handler) handleMessage(ctx context.Context, message *tgbotapi.Message) {
+	chatID := message.Chat.ID
+	userID := int64(message.From.ID)
+
+	h.logger.Info("Received message",
+		zap.Int64("chat_id", chatID),
+		zap.Int64("user_id", userID),
+		zap.String("text", message.Text),
+	)
+
+	// Проверка авторизации
+	if h.auth != nil && h.auth.IsEnabled() && !h.auth.IsAuthorized(userID) {
+		h.handleAuthFlow(ctx, message)
+		return
+	}
+
+	if message.IsCommand() {
+		h.handleCommand(ctx, message)
+		return
+	}
+
+	if message.Text != "" {
+		h.handleTextMessage(ctx, message)
+	}
+}
+
+// handleCommand обрабатывает команды бота
+func (h *Handler) handleCommand(ctx context.Context, message *tgbotapi.Message) {
+	chatID := message.Chat.ID
+	command := message.Command()
+
+	switch command {
+	case "start":
+		h.sendMessage(chatID, "👋 Привет! Я бот для скачивания видео.\n\n"+
+			"Отправь мне ссылку на видео с:\n"+
+			"• YouTube\n"+
+			"• TikTok\n"+
+			"• Instagram (Reels и обычные видео)\n\n"+
+			"И я скачаю и отправлю тебе видео!")
+
+	case "help":
+		h.sendMessage(chatID, "📖 Помощь\n\n"+
+			"Доступные команды:\n"+
+			"/start - Начать работу с ботом\n"+
+			"/help - Показать эту справку\n\n"+
+			"Как использовать:\n"+
+			"Просто отправь ссылку на видео, и я скачаю его для тебя!\n\n"+
+			"Поддерживаемые платформы:\n"+
+			"• YouTube (youtube.com, youtu.be)\n"+
+			"• TikTok (tiktok.com)\n"+
+			"• Instagram (instagram.com)")
+
+	default:
+		h.sendMessage(chatID, "❓ Неизвестная команда. Используй /help для справки.")
+	}
+}
+
+// handleTextMessage обрабатывает текстовые сообщения со ссылками
+func (h *Handler) handleTextMessage(ctx context.Context, message *tgbotapi.Message) {
+	chatID := message.Chat.ID
+	text := strings.TrimSpace(message.Text)
+
+	if !h.containsURL(text) {
+		h.sendMessage(chatID, "❌ Пожалуйста, отправь валидную ссылку на видео.")
+		return
+	}
+
+	url := h.extractURL(text)
+	if url == "" {
+		h.sendMessage(chatID, "❌ Не удалось извлечь ссылку из сообщения.")
+		return
+	}
+
+	statusMsg := h.sendMessage(chatID, "⏳ Запрос принят, начинаю загрузку видео...")
+	downloadCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+
+	req := &downloadRequest{
+		ctx:             downloadCtx,
+		cancel:          cancel,
+		chatID:          chatID,
+		url:             url,
+		statusMessageID: h.safeMessageID(statusMsg),
+		source:          "direct_message",
+		originalMessage: message.MessageID,
+	}
+
+	if !h.enqueueDownload(req) {
+		cancel()
+		h.handleQueueOverflow(chatID, req.statusMessageID)
+	}
+}
+
+func (h *Handler) enqueueDownload(req *downloadRequest) bool {
+	select {
+	case h.downloadQueue <- req:
+		h.logger.Info("Download request enqueued",
+			zap.Int64("chat_id", req.chatID),
+			zap.String("url", req.url),
+			zap.String("source", req.source),
+		)
+		return true
+	default:
+		h.logger.Warn("Download queue is full",
+			zap.Int("queue_capacity", h.queueSizeLimit),
+			zap.String("url", req.url),
+		)
+		return false
+	}
+}
+
+func (h *Handler) handleQueueOverflow(chatID int64, statusMessageID int) {
+	if statusMessageID != 0 {
+		h.deleteMessage(chatID, statusMessageID)
+	}
+	h.sendMessage(chatID, "⚠️ Слишком много одновременных запросов. Попробуй повторить через пару минут.")
+}
+
+func (h *Handler) processDownload(req *downloadRequest) {
+	defer req.cancel()
+
+	h.logger.Info("Processing download request",
+		zap.Int64("chat_id", req.chatID),
+		zap.String("url", req.url),
+		zap.String("source", req.source),
+	)
+
+	filePath, err := h.downloader.Download(req.ctx, req.url)
+	if err != nil {
+		h.clearStatusMessage(req)
+		h.logger.Error("Failed to download video",
+			zap.String("url", req.url),
+			zap.Error(err),
+		)
+		h.sendMessage(req.chatID, fmt.Sprintf("❌ Ошибка при загрузке видео: %s", err.Error()))
+		return
+	}
+	defer func() {
+		if err := h.downloader.Cleanup(filePath); err != nil {
+			h.logger.Warn("Failed to cleanup file", zap.String("file", filePath), zap.Error(err))
+		}
+	}()
+
+	h.clearStatusMessage(req)
+
+	fileSize, err := h.downloader.GetFileSize(filePath)
+	if err != nil {
+		h.logger.Error("Failed to get file size", zap.String("file", filePath), zap.Error(err))
+		h.sendMessage(req.chatID, "❌ Ошибка при проверке размера файла.")
+		return
+	}
+
+	maxAllowed := h.maxAllowedFileSize()
+	if fileSize > maxAllowed {
+		h.sendMessage(req.chatID, fmt.Sprintf(
+			"❌ Видео слишком большое (%.2f MB). Ограничение Telegram %.0f MB.",
+			float64(fileSize)/(1024*1024),
+			float64(maxAllowed)/(1024*1024),
+		))
+		return
+	}
+
+	if err := h.sendVideo(req.chatID, filePath); err != nil {
+		h.logger.Error("Failed to send video",
+			zap.String("file", filePath),
+			zap.Error(err),
+		)
+		h.sendMessage(req.chatID, fmt.Sprintf("❌ Ошибка при отправке видео: %s", err.Error()))
+		return
+	}
+
+	h.logger.Info("Video delivered successfully",
+		zap.Int64("chat_id", req.chatID),
+		zap.String("url", req.url),
+	)
+
+	h.deleteOriginalMessage(req)
+}
+
+func (h *Handler) clearStatusMessage(req *downloadRequest) {
+	if req.statusMessageID != 0 {
+		h.deleteMessage(req.chatID, req.statusMessageID)
+		req.statusMessageID = 0
+	}
+}
+
+func (h *Handler) deleteOriginalMessage(req *downloadRequest) {
+	if req.originalMessage != 0 {
+		h.deleteMessage(req.chatID, req.originalMessage)
+		req.originalMessage = 0
+	}
+}
+
+// handleAuthFlow обрабатывает сообщения от неавторизованных пользователей
+func (h *Handler) handleAuthFlow(ctx context.Context, message *tgbotapi.Message) {
+	chatID := message.Chat.ID
+	userID := int64(message.From.ID)
+	text := strings.TrimSpace(message.Text)
+
+	// Если это команда или пустое сообщение — просто просим отправить токен
+	if text == "" || message.IsCommand() {
+		h.sendMessage(chatID, "🔒 Этот бот доступен только по токену доступа.\nОтправь мне токен, который выдал администратор.")
+		return
+	}
+
+	// Пытаемся авторизовать пользователя по присланному тексту
+	if ok := h.auth.TryAuthorize(userID, text); !ok {
+		h.sendMessage(chatID, "❌ Неверный токен доступа.\nПроверь токен или обратись к администратору.")
+		return
+	}
+
+	h.sendMessage(chatID, "✅ Авторизация успешна! Теперь ты можешь отправлять ссылки на видео.")
+}
+
+func (h *Handler) handleInlineQuery(ctx context.Context, inlineQuery *tgbotapi.InlineQuery) {
+	queryText := strings.TrimSpace(inlineQuery.Query)
+	userID := int64(inlineQuery.From.ID)
+
+	h.logger.Info("Received inline query",
+		zap.String("query_id", inlineQuery.ID),
+		zap.Int64("user_id", userID),
+		zap.String("query", queryText),
+	)
+
+	// Если включена авторизация и пользователь не авторизован — показываем подсказку
+	if h.auth != nil && h.auth.IsEnabled() && !h.auth.IsAuthorized(userID) {
+		results := []interface{}{
+			tgbotapi.NewInlineQueryResultArticle(
+				inlineQuery.ID+"-auth",
+				"Требуется авторизация",
+				"Этот бот защищён.\nОткрой личный чат с ботом и отправь токен доступа, который выдал администратор.",
+			),
+		}
+
+		inlineConfig := tgbotapi.InlineConfig{
+			InlineQueryID: inlineQuery.ID,
+			Results:       results,
+			CacheTime:     0,
+			IsPersonal:    true,
+		}
+
+		if _, err := h.bot.Request(inlineConfig); err != nil {
+			h.logger.Error("Failed to answer inline auth query",
+				zap.String("query_id", inlineQuery.ID),
+				zap.Error(err),
+			)
+		}
+		return
+	}
+
+	results := h.buildInlineResults(inlineQuery.ID, queryText)
+
+	inlineConfig := tgbotapi.InlineConfig{
+		InlineQueryID: inlineQuery.ID,
+		Results:       results,
+		CacheTime:     0,
+		IsPersonal:    true,
+	}
+
+	if _, err := h.bot.Request(inlineConfig); err != nil {
+		h.logger.Error("Failed to answer inline query",
+			zap.String("query_id", inlineQuery.ID),
+			zap.Error(err),
+		)
+	}
+}
+
+func (h *Handler) buildInlineResults(queryID, rawQuery string) []interface{} {
+	var results []interface{}
+
+	if url := h.extractURL(rawQuery); url != "" && h.containsURL(url) {
+		messageText := fmt.Sprintf("⏳ Запрос на скачивание:\n%s\n\nБот отправит видео в личные сообщения.", url)
+		result := tgbotapi.NewInlineQueryResultArticle(queryID+"-download", "Скачать видео", messageText)
+		result.Description = "Поддерживаются YouTube, TikTok и Instagram"
+		results = append(results, result)
+	} else {
+		helpResult := tgbotapi.NewInlineQueryResultArticle(
+			queryID+"-help",
+			"Укажи ссылку на видео",
+			"Пример: https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		)
+		helpResult.Description = "Поддерживаются YouTube, TikTok и Instagram"
+		results = append(results, helpResult)
+	}
+
+	return results
+}
+
+func (h *Handler) handleChosenInlineResult(ctx context.Context, result *tgbotapi.ChosenInlineResult) {
+	url := h.extractURL(result.Query)
+	if url == "" {
+		h.logger.Warn("Chosen inline result without URL", zap.String("query", result.Query))
+		return
+	}
+
+	chatID := int64(result.From.ID)
+	userID := chatID
+
+	if h.auth != nil && h.auth.IsEnabled() && !h.auth.IsAuthorized(userID) {
+		h.logger.Warn("Unauthenticated user tried to use inline chosen result",
+			zap.Int64("user_id", userID),
+		)
+		h.sendMessage(chatID, "🔒 Этот бот защищён. Отправь токен доступа в личные сообщения бота, чтобы продолжить использование.")
+		return
+	}
+	statusMsg := h.sendMessage(chatID, "⏳ Обработка inline-запроса, загружаю видео...")
+	downloadCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+
+	req := &downloadRequest{
+		ctx:             downloadCtx,
+		cancel:          cancel,
+		chatID:          chatID,
+		url:             url,
+		statusMessageID: h.safeMessageID(statusMsg),
+		source:          "inline_mode",
+	}
+
+	if !h.enqueueDownload(req) {
+		cancel()
+		h.handleQueueOverflow(chatID, req.statusMessageID)
+	}
+}
+
+func (h *Handler) safeMessageID(msg *tgbotapi.Message) int {
+	if msg == nil {
+		return 0
+	}
+	return msg.MessageID
+}
+
+func (h *Handler) maxAllowedFileSize() int64 {
+	const telegramLimit = int64(50 * 1024 * 1024)
+	if h.maxVideoSize <= 0 || h.maxVideoSize > telegramLimit {
+		return telegramLimit
+	}
+	return h.maxVideoSize
+}
+
+// containsURL проверяет, содержит ли текст URL
+func (h *Handler) containsURL(text string) bool {
+	return strings.Contains(text, "http://") ||
+		strings.Contains(text, "https://") ||
+		strings.Contains(text, "youtube.com") ||
+		strings.Contains(text, "youtu.be") ||
+		strings.Contains(text, "tiktok.com") ||
+		strings.Contains(text, "instagram.com")
+}
+
+// extractURL извлекает первый URL из текста
+func (h *Handler) extractURL(text string) string {
+	words := strings.Fields(text)
+	for _, word := range words {
+		if strings.HasPrefix(word, "http://") || strings.HasPrefix(word, "https://") {
+			// Убираем возможные знаки препинания в конце
+			word = strings.TrimRight(word, ".,;:!?")
+			return word
+		}
+	}
+	return ""
+}
+
+// sendMessage отправляет текстовое сообщение
+func (h *Handler) sendMessage(chatID int64, text string) *tgbotapi.Message {
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ParseMode = "HTML"
+
+	sentMsg, err := h.bot.Send(msg)
+	if err != nil {
+		h.logger.Error("Failed to send message",
+			zap.Int64("chat_id", chatID),
+			zap.Error(err),
+		)
+		return nil
+	}
+	return &sentMsg
+}
+
+// deleteMessage удаляет сообщение
+func (h *Handler) deleteMessage(chatID int64, messageID int) {
+	deleteMsg := tgbotapi.NewDeleteMessage(chatID, messageID)
+	if _, err := h.bot.Send(deleteMsg); err != nil {
+		h.logger.Warn("Failed to delete message",
+			zap.Int64("chat_id", chatID),
+			zap.Int("message_id", messageID),
+			zap.Error(err),
+		)
+	}
+}
+
+// sendVideo отправляет видео файл
+func (h *Handler) sendVideo(chatID int64, filePath string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	// Получаем информацию о файле
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to get file info: %w", err)
+	}
+
+	// Создаем FileBytes для отправки
+	fileBytes := tgbotapi.FileBytes{
+		Name:  fileInfo.Name(),
+		Bytes: make([]byte, fileInfo.Size()),
+	}
+
+	// Читаем файл
+	if _, err := file.Read(fileBytes.Bytes); err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// Отправляем видео
+	video := tgbotapi.NewVideo(chatID, fileBytes)
+	video.SupportsStreaming = true
+
+	h.logger.Info("Sending video",
+		zap.Int64("chat_id", chatID),
+		zap.String("file", filePath),
+		zap.Int64("size", fileInfo.Size()),
+	)
+
+	if _, err := h.bot.Send(video); err != nil {
+		return fmt.Errorf("failed to send video: %w", err)
+	}
+
+	h.logger.Info("Video sent successfully", zap.Int64("chat_id", chatID))
+	return nil
+}

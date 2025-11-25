@@ -1,0 +1,119 @@
+package yt
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"go.uber.org/zap"
+)
+
+// Downloader реализует загрузку видео с YouTube
+type Downloader struct {
+	logger       *zap.Logger
+	tempDir      string
+	videoQuality string
+}
+
+// NewDownloader создает новый экземпляр YouTube загрузчика
+func NewDownloader(logger *zap.Logger, tempDir, videoQuality string) *Downloader {
+	return &Downloader{
+		logger:       logger,
+		tempDir:      tempDir,
+		videoQuality: videoQuality,
+	}
+}
+
+// Download скачивает видео с YouTube используя yt-dlp
+// Возвращает путь к скачанному файлу
+func (d *Downloader) Download(ctx context.Context, url string) (string, error) {
+	d.logger.Info("Starting YouTube video download", zap.String("url", url))
+
+	// Проверяем наличие yt-dlp
+	if _, err := exec.LookPath("yt-dlp"); err != nil {
+		return "", fmt.Errorf("yt-dlp not found. Please install yt-dlp: https://github.com/yt-dlp/yt-dlp")
+	}
+
+	// Создаем временный файл для сохранения видео
+	outputFile := filepath.Join(d.tempDir, "yt_%(title)s.%(ext)s")
+
+	// Формируем команду yt-dlp
+	args := []string{
+		url,
+		"-o", outputFile,
+		"-f", d.getFormatString(),
+		"--no-playlist",
+		"--no-warnings",
+		"--quiet",
+	}
+
+	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
+	cmd.Dir = d.tempDir
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		d.logger.Error("Failed to download YouTube video",
+			zap.String("url", url),
+			zap.Error(err),
+			zap.String("output", string(output)),
+		)
+		return "", fmt.Errorf("failed to download video: %w", err)
+	}
+
+	// Находим скачанный файл
+	// yt-dlp выводит путь к файлу, но мы можем найти его по паттерну
+	files, err := filepath.Glob(filepath.Join(d.tempDir, "yt_*"))
+	if err != nil {
+		return "", fmt.Errorf("failed to find downloaded file: %w", err)
+	}
+
+	if len(files) == 0 {
+		return "", fmt.Errorf("downloaded file not found")
+	}
+
+	// Находим самый новый файл
+	var latestFile string
+	var latestTime int64
+	for _, file := range files {
+		info, err := os.Stat(file)
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Unix() > latestTime {
+			latestTime = info.ModTime().Unix()
+			latestFile = file
+		}
+	}
+
+	if latestFile == "" {
+		return "", fmt.Errorf("downloaded file not found")
+	}
+
+	d.logger.Info("YouTube video downloaded successfully",
+		zap.String("url", url),
+		zap.String("file", latestFile),
+	)
+
+	return latestFile, nil
+}
+
+// getFormatString возвращает строку формата для yt-dlp в зависимости от качества
+func (d *Downloader) getFormatString() string {
+	switch strings.ToLower(d.videoQuality) {
+	case "best":
+		return "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+	case "worst":
+		return "worst[ext=mp4]/worst"
+	default:
+		return "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+	}
+}
+
+// IsValidURL проверяет, является ли URL валидной ссылкой на YouTube
+func IsValidURL(url string) bool {
+	return strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be")
+}
+
