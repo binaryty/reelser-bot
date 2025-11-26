@@ -668,19 +668,20 @@ func (h *Handler) sendVideo(chatID int64, filePath string) error {
 		return fmt.Errorf("failed to get file info: %w", err)
 	}
 
-	// Создаем FileBytes для отправки
-	fileBytes := tgbotapi.FileBytes{
-		Name:  fileInfo.Name(),
-		Bytes: make([]byte, fileInfo.Size()),
+	// Проверяем размер файла перед отправкой
+	maxAllowed := h.maxAllowedFileSize()
+	if fileInfo.Size() > maxAllowed {
+		return fmt.Errorf("file size %d exceeds maximum allowed size %d", fileInfo.Size(), maxAllowed)
 	}
 
-	// Читаем файл
-	if _, err := file.Read(fileBytes.Bytes); err != nil {
-		return fmt.Errorf("failed to read file: %w", err)
+	// Используем FileReader для потоковой отправки вместо загрузки всего файла в память
+	fileReader := tgbotapi.FileReader{
+		Name:   fileInfo.Name(),
+		Reader: file,
 	}
 
 	// Отправляем видео
-	video := tgbotapi.NewVideo(chatID, fileBytes)
+	video := tgbotapi.NewVideo(chatID, fileReader)
 	video.SupportsStreaming = true
 
 	h.logger.Info("Sending video",
