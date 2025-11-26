@@ -5,24 +5,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
-
-	"go.uber.org/zap"
 )
 
 // Downloader реализует загрузку видео с TikTok
 type Downloader struct {
-	logger  *zap.Logger
+	logger  *slog.Logger
 	tempDir string
 	client  *http.Client
 }
 
 // NewDownloader создает новый экземпляр TikTok загрузчика
-func NewDownloader(logger *zap.Logger, tempDir string) *Downloader {
+func NewDownloader(logger *slog.Logger, tempDir string) *Downloader {
 	return &Downloader{
 		logger:  logger,
 		tempDir: tempDir,
@@ -35,7 +34,7 @@ func NewDownloader(logger *zap.Logger, tempDir string) *Downloader {
 // Download скачивает видео с TikTok используя TikWM API
 // Возвращает путь к скачанному файлу
 func (d *Downloader) Download(ctx context.Context, url string) (string, error) {
-	d.logger.Info("Starting TikTok video download", zap.String("url", url))
+	d.logger.Info("Starting TikTok video download", slog.String("url", url))
 
 	// Используем TikWM API для получения прямой ссылки на видео
 	apiURL := fmt.Sprintf("https://tikwm.com/api?url=%s", url)
@@ -50,8 +49,8 @@ func (d *Downloader) Download(ctx context.Context, url string) (string, error) {
 	resp, err := d.client.Do(req)
 	if err != nil {
 		d.logger.Error("Failed to fetch TikTok video info",
-			zap.String("url", url),
-			zap.Error(err),
+			slog.String("url", url),
+			slog.Any("error", err),
 		)
 		return "", fmt.Errorf("failed to fetch video info: %w", err)
 	}
@@ -126,8 +125,8 @@ func (d *Downloader) Download(ctx context.Context, url string) (string, error) {
 	}
 
 	d.logger.Info("TikTok video downloaded successfully",
-		zap.String("url", url),
-		zap.String("file", outputFile),
+		slog.String("url", url),
+		slog.String("file", outputFile),
 	)
 
 	return outputFile, nil

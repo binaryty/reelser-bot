@@ -3,23 +3,22 @@ package yt
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"go.uber.org/zap"
 )
 
 // Downloader реализует загрузку видео с YouTube
 type Downloader struct {
-	logger       *zap.Logger
+	logger       *slog.Logger
 	tempDir      string
 	videoQuality string
 }
 
 // NewDownloader создает новый экземпляр YouTube загрузчика
-func NewDownloader(logger *zap.Logger, tempDir, videoQuality string) *Downloader {
+func NewDownloader(logger *slog.Logger, tempDir, videoQuality string) *Downloader {
 	return &Downloader{
 		logger:       logger,
 		tempDir:      tempDir,
@@ -30,7 +29,7 @@ func NewDownloader(logger *zap.Logger, tempDir, videoQuality string) *Downloader
 // Download скачивает видео с YouTube используя yt-dlp
 // Возвращает путь к скачанному файлу
 func (d *Downloader) Download(ctx context.Context, url string) (string, error) {
-	d.logger.Info("Starting YouTube video download", zap.String("url", url))
+	d.logger.Info("Starting YouTube video download", slog.String("url", url))
 
 	// Проверяем наличие yt-dlp
 	if _, err := exec.LookPath("yt-dlp"); err != nil {
@@ -56,9 +55,9 @@ func (d *Downloader) Download(ctx context.Context, url string) (string, error) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		d.logger.Error("Failed to download YouTube video",
-			zap.String("url", url),
-			zap.Error(err),
-			zap.String("output", string(output)),
+			slog.String("url", url),
+			slog.Any("error", err),
+			slog.String("output", string(output)),
 		)
 		return "", fmt.Errorf("failed to download video: %w", err)
 	}
@@ -93,8 +92,8 @@ func (d *Downloader) Download(ctx context.Context, url string) (string, error) {
 	}
 
 	d.logger.Info("YouTube video downloaded successfully",
-		zap.String("url", url),
-		zap.String("file", latestFile),
+		slog.String("url", url),
+		slog.String("file", latestFile),
 	)
 
 	return latestFile, nil

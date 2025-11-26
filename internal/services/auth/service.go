@@ -3,6 +3,7 @@ package auth
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,12 +11,11 @@ import (
 	"sync"
 
 	"github.com/reelser-bot/internal/config"
-	"go.uber.org/zap"
 )
 
 // Service отвечает за авторизацию пользователей по токенам
 type Service struct {
-	logger  *zap.Logger
+	logger  *slog.Logger
 	enabled bool
 
 	mu               sync.RWMutex
@@ -25,7 +25,7 @@ type Service struct {
 }
 
 // NewService создает новый сервис авторизации
-func NewService(logger *zap.Logger, cfg config.AuthConfig) *Service {
+func NewService(logger *slog.Logger, cfg config.AuthConfig) *Service {
 	tokens := make(map[string]struct{})
 	for _, t := range cfg.Tokens {
 		tokens[t] = struct{}{}
@@ -74,7 +74,7 @@ func (s *Service) TryAuthorize(userID int64, token string) bool {
 
 	if _, ok := s.validTokens[token]; !ok {
 		s.logger.Warn("Invalid auth token attempt",
-			zap.Int64("user_id", userID),
+			slog.Int64("user_id", userID),
 		)
 		return false
 	}
@@ -86,13 +86,13 @@ func (s *Service) TryAuthorize(userID int64, token string) bool {
 	s.allowedUsers[userID] = struct{}{}
 	if err := s.appendAllowedUserToFile(userID); err != nil {
 		s.logger.Warn("Failed to persist allowed user",
-			zap.Int64("user_id", userID),
-			zap.Error(err),
+			slog.Int64("user_id", userID),
+			slog.Any("error", err),
 		)
 	}
 
 	s.logger.Info("User authorized successfully",
-		zap.Int64("user_id", userID),
+		slog.Int64("user_id", userID),
 	)
 
 	return true
@@ -109,8 +109,8 @@ func (s *Service) loadAllowedUsersFromFile() {
 			return
 		}
 		s.logger.Warn("Failed to open allowed users file",
-			zap.String("file", s.allowedUsersFile),
-			zap.Error(err),
+			slog.String("file", s.allowedUsersFile),
+			slog.Any("error", err),
 		)
 		return
 	}
@@ -126,9 +126,9 @@ func (s *Service) loadAllowedUsersFromFile() {
 		id, err := strconv.ParseInt(line, 10, 64)
 		if err != nil {
 			s.logger.Warn("Invalid user id in allowed users file",
-				zap.String("line", line),
-				zap.String("file", s.allowedUsersFile),
-				zap.Error(err),
+				slog.String("line", line),
+				slog.String("file", s.allowedUsersFile),
+				slog.Any("error", err),
 			)
 			continue
 		}
@@ -138,8 +138,8 @@ func (s *Service) loadAllowedUsersFromFile() {
 
 	if err := scanner.Err(); err != nil {
 		s.logger.Warn("Failed to read allowed users file",
-			zap.String("file", s.allowedUsersFile),
-			zap.Error(err),
+			slog.String("file", s.allowedUsersFile),
+			slog.Any("error", err),
 		)
 	}
 }

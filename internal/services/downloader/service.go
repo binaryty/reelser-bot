@@ -3,6 +3,7 @@ package downloader
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,8 +11,6 @@ import (
 	"github.com/reelser-bot/internal/platform/instagram"
 	"github.com/reelser-bot/internal/platform/tiktok"
 	"github.com/reelser-bot/internal/platform/yt"
-
-	"go.uber.org/zap"
 )
 
 // VideoDownloader интерфейс для загрузки видео
@@ -21,7 +20,7 @@ type VideoDownloader interface {
 
 // Service управляет загрузкой видео с разных платформ
 type Service struct {
-	logger           *zap.Logger
+	logger           *slog.Logger
 	tempDir          string
 	ytDownloader     *yt.Downloader
 	tiktokDownloader *tiktok.Downloader
@@ -30,7 +29,7 @@ type Service struct {
 
 // NewService создает новый сервис загрузки видео
 func NewService(
-	logger *zap.Logger,
+	logger *slog.Logger,
 	tempDir string,
 	videoQuality string,
 ) *Service {
@@ -45,7 +44,7 @@ func NewService(
 
 // Download определяет платформу по URL и скачивает видео
 func (s *Service) Download(ctx context.Context, url string) (string, error) {
-	s.logger.Info("Processing download request", zap.String("url", url))
+	s.logger.Info("Processing download request", slog.String("url", url))
 
 	// Определяем платформу
 	platform, downloader := s.getDownloader(url)
@@ -53,15 +52,15 @@ func (s *Service) Download(ctx context.Context, url string) (string, error) {
 		return "", fmt.Errorf("unsupported platform or invalid URL: %s", url)
 	}
 
-	s.logger.Info("Platform detected", zap.String("platform", platform))
+	s.logger.Info("Platform detected", slog.String("platform", platform))
 
 	// Скачиваем видео
 	filePath, err := downloader.Download(ctx, url)
 	if err != nil {
 		s.logger.Error("Failed to download video",
-			zap.String("url", url),
-			zap.String("platform", platform),
-			zap.Error(err),
+			slog.String("url", url),
+			slog.String("platform", platform),
+			slog.Any("error", err),
 		)
 		return "", fmt.Errorf("failed to download video: %w", err)
 	}
@@ -72,9 +71,9 @@ func (s *Service) Download(ctx context.Context, url string) (string, error) {
 	}
 
 	s.logger.Info("Video downloaded successfully",
-		zap.String("url", url),
-		zap.String("platform", platform),
-		zap.String("file", filePath),
+		slog.String("url", url),
+		slog.String("platform", platform),
+		slog.String("file", filePath),
 	)
 
 	return filePath, nil
@@ -122,13 +121,13 @@ func (s *Service) Cleanup(filePath string) error {
 
 	if err := os.Remove(filePath); err != nil {
 		s.logger.Warn("Failed to remove temporary file",
-			zap.String("file", filePath),
-			zap.Error(err),
+			slog.String("file", filePath),
+			slog.Any("error", err),
 		)
 		return err
 	}
 
-	s.logger.Info("Temporary file removed", zap.String("file", filePath))
+	s.logger.Info("Temporary file removed", slog.String("file", filePath))
 	return nil
 }
 

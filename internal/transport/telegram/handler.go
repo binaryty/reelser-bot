@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -11,14 +12,13 @@ import (
 	"github.com/reelser-bot/internal/services/downloader"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"go.uber.org/zap"
 )
 
 // Handler обрабатывает входящие сообщения от Telegram
 type Handler struct {
 	bot            *tgbotapi.BotAPI
 	botUsername    string
-	logger         *zap.Logger
+	logger         *slog.Logger
 	downloader     *downloader.Service
 	auth           *auth.Service
 	maxVideoSize   int64 // в байтах
@@ -41,7 +41,7 @@ type downloadRequest struct {
 func NewHandler(
 	bot *tgbotapi.BotAPI,
 	botUsername string,
-	logger *zap.Logger,
+	logger *slog.Logger,
 	downloader *downloader.Service,
 	authService *auth.Service,
 	maxVideoSizeMB int,
@@ -73,7 +73,7 @@ func (h *Handler) startWorkers() {
 	for i := 0; i < h.workerCount; i++ {
 		workerID := i + 1
 		go func(id int) {
-			h.logger.Info("Download worker started", zap.Int("worker_id", id))
+			h.logger.Info("Download worker started", slog.Int("worker_id", id))
 			for req := range h.downloadQueue {
 				h.processDownload(req)
 			}
@@ -100,10 +100,11 @@ func (h *Handler) handleMessage(ctx context.Context, message *tgbotapi.Message) 
 	userID := int64(message.From.ID)
 
 	h.logger.Info("Received message",
-		zap.Int64("chat_id", chatID),
-		zap.Int64("user_id", userID),
-		zap.String("text", message.Text),
-		zap.String("chat_type", message.Chat.Type),
+		slog.Int64("chat_id", chatID),
+		slog.Int64("user_id", userID),
+		slog.String("username", message.From.UserName),
+		slog.String("text", message.Text),
+		slog.String("chat_type", message.Chat.Type),
 	)
 
 	// В группах и супергруппах бот должен быть упомянут
@@ -211,15 +212,15 @@ func (h *Handler) enqueueDownload(req *downloadRequest) bool {
 	select {
 	case h.downloadQueue <- req:
 		h.logger.Info("Download request enqueued",
-			zap.Int64("chat_id", req.chatID),
-			zap.String("url", req.url),
-			zap.String("source", req.source),
+			slog.Int64("chat_id", req.chatID),
+			slog.String("url", req.url),
+			slog.String("source", req.source),
 		)
 		return true
 	default:
 		h.logger.Warn("Download queue is full",
-			zap.Int("queue_capacity", h.queueSizeLimit),
-			zap.String("url", req.url),
+			slog.Int("queue_capacity", h.queueSizeLimit),
+			slog.String("url", req.url),
 		)
 		return false
 	}
@@ -236,24 +237,24 @@ func (h *Handler) processDownload(req *downloadRequest) {
 	defer req.cancel()
 
 	h.logger.Info("Processing download request",
-		zap.Int64("chat_id", req.chatID),
-		zap.String("url", req.url),
-		zap.String("source", req.source),
+		slog.Int64("chat_id", req.chatID),
+		slog.String("url", req.url),
+		slog.String("source", req.source),
 	)
 
 	filePath, err := h.downloader.Download(req.ctx, req.url)
 	if err != nil {
 		h.clearStatusMessage(req)
 		h.logger.Error("Failed to download video",
-			zap.String("url", req.url),
-			zap.Error(err),
+			slog.String("url", req.url),
+			slog.Any("error", err),
 		)
 		h.sendMessage(req.chatID, fmt.Sprintf("❌ Ошибка при загрузке видео: %s", err.Error()))
 		return
 	}
 	defer func() {
 		if err := h.downloader.Cleanup(filePath); err != nil {
-			h.logger.Warn("Failed to cleanup file", zap.String("file", filePath), zap.Error(err))
+			h.logger.Warn("Failed to cleanup file", slog.String("file", filePath), slog.Any("error", err))
 		}
 	}()
 
@@ -261,7 +262,7 @@ func (h *Handler) processDownload(req *downloadRequest) {
 
 	fileSize, err := h.downloader.GetFileSize(filePath)
 	if err != nil {
-		h.logger.Error("Failed to get file size", zap.String("file", filePath), zap.Error(err))
+		h.logger.Error("Failed to get file size", slog.String("file", filePath), slog.Any("error", err))
 		h.sendMessage(req.chatID, "❌ Ошибка при проверке размера файла.")
 		return
 	}
@@ -278,16 +279,16 @@ func (h *Handler) processDownload(req *downloadRequest) {
 
 	if err := h.sendVideo(req.chatID, filePath); err != nil {
 		h.logger.Error("Failed to send video",
-			zap.String("file", filePath),
-			zap.Error(err),
+			slog.String("file", filePath),
+			slog.Any("error", err),
 		)
 		h.sendMessage(req.chatID, fmt.Sprintf("❌ Ошибка при отправке видео: %s", err.Error()))
 		return
 	}
 
 	h.logger.Info("Video delivered successfully",
-		zap.Int64("chat_id", req.chatID),
-		zap.String("url", req.url),
+		slog.Int64("chat_id", req.chatID),
+		slog.String("url", req.url),
 	)
 
 	h.deleteOriginalMessage(req)
@@ -334,9 +335,10 @@ func (h *Handler) handleInlineQuery(ctx context.Context, inlineQuery *tgbotapi.I
 	userID := int64(inlineQuery.From.ID)
 
 	h.logger.Info("Received inline query",
-		zap.String("query_id", inlineQuery.ID),
-		zap.Int64("user_id", userID),
-		zap.String("query", queryText),
+		slog.String("query_id", inlineQuery.ID),
+		slog.Int64("user_id", userID),
+		slog.String("username", inlineQuery.From.UserName),
+		slog.String("query", queryText),
 	)
 
 	// Если включена авторизация и пользователь не авторизован — показываем подсказку
@@ -358,8 +360,8 @@ func (h *Handler) handleInlineQuery(ctx context.Context, inlineQuery *tgbotapi.I
 
 		if _, err := h.bot.Request(inlineConfig); err != nil {
 			h.logger.Error("Failed to answer inline auth query",
-				zap.String("query_id", inlineQuery.ID),
-				zap.Error(err),
+				slog.String("query_id", inlineQuery.ID),
+				slog.Any("error", err),
 			)
 		}
 		return
@@ -376,8 +378,8 @@ func (h *Handler) handleInlineQuery(ctx context.Context, inlineQuery *tgbotapi.I
 
 	if _, err := h.bot.Request(inlineConfig); err != nil {
 		h.logger.Error("Failed to answer inline query",
-			zap.String("query_id", inlineQuery.ID),
-			zap.Error(err),
+			slog.String("query_id", inlineQuery.ID),
+			slog.Any("error", err),
 		)
 	}
 }
@@ -406,7 +408,7 @@ func (h *Handler) buildInlineResults(queryID, rawQuery string) []interface{} {
 func (h *Handler) handleChosenInlineResult(ctx context.Context, result *tgbotapi.ChosenInlineResult) {
 	url := h.extractURL(result.Query)
 	if url == "" {
-		h.logger.Warn("Chosen inline result without URL", zap.String("query", result.Query))
+		h.logger.Warn("Chosen inline result without URL", slog.String("query", result.Query))
 		return
 	}
 
@@ -415,7 +417,7 @@ func (h *Handler) handleChosenInlineResult(ctx context.Context, result *tgbotapi
 
 	if h.auth != nil && h.auth.IsEnabled() && !h.auth.IsAuthorized(userID) {
 		h.logger.Warn("Unauthenticated user tried to use inline chosen result",
-			zap.Int64("user_id", userID),
+			slog.Int64("user_id", userID),
 		)
 		h.sendMessage(chatID, "🔒 Этот бот защищён. Отправь токен доступа в личные сообщения бота, чтобы продолжить использование.")
 		return
@@ -527,8 +529,8 @@ func (h *Handler) sendMessage(chatID int64, text string) *tgbotapi.Message {
 	sentMsg, err := h.bot.Send(msg)
 	if err != nil {
 		h.logger.Error("Failed to send message",
-			zap.Int64("chat_id", chatID),
-			zap.Error(err),
+			slog.Int64("chat_id", chatID),
+			slog.Any("error", err),
 		)
 		return nil
 	}
@@ -540,9 +542,9 @@ func (h *Handler) deleteMessage(chatID int64, messageID int) {
 	deleteMsg := tgbotapi.NewDeleteMessage(chatID, messageID)
 	if _, err := h.bot.Send(deleteMsg); err != nil {
 		h.logger.Warn("Failed to delete message",
-			zap.Int64("chat_id", chatID),
-			zap.Int("message_id", messageID),
-			zap.Error(err),
+			slog.Int64("chat_id", chatID),
+			slog.Int("message_id", messageID),
+			slog.Any("error", err),
 		)
 	}
 }
@@ -577,15 +579,15 @@ func (h *Handler) sendVideo(chatID int64, filePath string) error {
 	video.SupportsStreaming = true
 
 	h.logger.Info("Sending video",
-		zap.Int64("chat_id", chatID),
-		zap.String("file", filePath),
-		zap.Int64("size", fileInfo.Size()),
+		slog.Int64("chat_id", chatID),
+		slog.String("file", filePath),
+		slog.Int64("size", fileInfo.Size()),
 	)
 
 	if _, err := h.bot.Send(video); err != nil {
 		return fmt.Errorf("failed to send video: %w", err)
 	}
 
-	h.logger.Info("Video sent successfully", zap.Int64("chat_id", chatID))
+	h.logger.Info("Video sent successfully", slog.Int64("chat_id", chatID))
 	return nil
 }

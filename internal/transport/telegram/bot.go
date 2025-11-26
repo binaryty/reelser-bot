@@ -3,19 +3,19 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/reelser-bot/internal/services/auth"
 	"github.com/reelser-bot/internal/services/downloader"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"go.uber.org/zap"
 )
 
 // Bot представляет Telegram-бота
 type Bot struct {
 	api     *tgbotapi.BotAPI
 	handler *Handler
-	logger  *zap.Logger
+	logger  *slog.Logger
 	ctx     context.Context
 	cancel  context.CancelFunc
 }
@@ -23,7 +23,7 @@ type Bot struct {
 // NewBot создает новый экземпляр бота
 func NewBot(
 	token string,
-	logger *zap.Logger,
+	logger *slog.Logger,
 	downloader *downloader.Service,
 	authService *auth.Service,
 	maxVideoSizeMB int,
@@ -48,8 +48,8 @@ func NewBot(
 	}
 
 	logger.Info("Bot initialized",
-		zap.String("username", api.Self.UserName),
-		zap.Int64("id", int64(api.Self.ID)),
+		slog.String("username", api.Self.UserName),
+		slog.Int64("id", int64(api.Self.ID)),
 	)
 
 	return bot, nil

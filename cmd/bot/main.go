@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -11,45 +11,41 @@ import (
 	"github.com/reelser-bot/internal/services/auth"
 	"github.com/reelser-bot/internal/services/downloader"
 	"github.com/reelser-bot/internal/transport/telegram"
-
-	"go.uber.org/zap"
 )
 
 func main() {
 	// Инициализация логгера
-	logger, err := initLogger()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
-		os.Exit(1)
-	}
-	defer logger.Sync()
+	logger := initLogger()
 
 	logger.Info("Starting application...")
 
 	// Загрузка конфигурации
 	cfg, err := config.Load()
 	if err != nil {
-		logger.Fatal("Failed to load configuration", zap.Error(err))
+		logger.Error("Failed to load configuration", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	logger.Info("Configuration loaded successfully")
 
 	// Создание временной директории
 	if err := os.MkdirAll(cfg.Download.TempDir, 0755); err != nil {
-		logger.Fatal("Failed to create temp directory",
-			zap.String("dir", cfg.Download.TempDir),
-			zap.Error(err),
+		logger.Error("Failed to create temp directory",
+			slog.String("dir", cfg.Download.TempDir),
+			slog.Any("error", err),
 		)
+		os.Exit(1)
 	}
 
 	// Получаем абсолютный путь к временной директории
 	absTempDir, err := filepath.Abs(cfg.Download.TempDir)
 	if err != nil {
-		logger.Fatal("Failed to get absolute temp dir path", zap.Error(err))
+		logger.Error("Failed to get absolute temp dir path", slog.Any("error", err))
+		os.Exit(1)
 	}
 	cfg.Download.TempDir = absTempDir
 
-	logger.Info("Temp directory created", zap.String("dir", cfg.Download.TempDir))
+	logger.Info("Temp directory created", slog.String("dir", cfg.Download.TempDir))
 
 	// Создание сервиса авторизации
 	authService := auth.NewService(logger, cfg.Auth)
@@ -71,7 +67,8 @@ func main() {
 		cfg.Download.WorkerPoolSize,
 	)
 	if err != nil {
-		logger.Fatal("Failed to create bot", zap.Error(err))
+		logger.Error("Failed to create bot", slog.Any("error", err))
+		os.Exit(1)
 	}
 
 	// Обработка сигналов для graceful shutdown
@@ -81,7 +78,7 @@ func main() {
 	// Запуск бота в отдельной горутине
 	go func() {
 		if err := bot.Start(); err != nil {
-			logger.Error("Bot stopped with error", zap.Error(err))
+			logger.Error("Bot stopped with error", slog.Any("error", err))
 		}
 	}()
 
@@ -96,17 +93,15 @@ func main() {
 	logger.Info("Application stopped")
 }
 
-// initLogger инициализирует логгер zap
-func initLogger() (*zap.Logger, error) {
-	// Для простоты используем development конфигурацию
-	// В production можно использовать production конфигурацию
-	config := zap.NewDevelopmentConfig()
-	// Development конфигурация уже включает цветное логирование по умолчанию
-
-	logger, err := config.Build()
-	if err != nil {
-		return nil, fmt.Errorf("failed to build logger: %w", err)
+// initLogger инициализирует логгер slog
+func initLogger() *slog.Logger {
+	opts := &slog.HandlerOptions{
+		Level: slog.LevelInfo,
 	}
 
-	return logger, nil
+	handler := slog.NewTextHandler(os.Stderr, opts)
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+
+	return logger
 }
