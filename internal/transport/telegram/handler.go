@@ -645,7 +645,7 @@ func (h *Handler) sendMessage(chatID int64, text string) *tgbotapi.Message {
 // deleteMessage удаляет сообщение
 func (h *Handler) deleteMessage(chatID int64, messageID int) {
 	deleteMsg := tgbotapi.NewDeleteMessage(chatID, messageID)
-	if _, err := h.bot.Send(deleteMsg); err != nil {
+	if _, err := h.bot.Request(deleteMsg); err != nil {
 		h.logger.Warn("Failed to delete message",
 			slog.Int64("chat_id", chatID),
 			slog.Int("message_id", messageID),

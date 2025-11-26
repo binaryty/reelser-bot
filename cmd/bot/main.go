@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/reelser-bot/internal/config"
 	"github.com/reelser-bot/internal/services/auth"
@@ -93,15 +95,77 @@ func main() {
 	logger.Info("Application stopped")
 }
 
-// initLogger инициализирует логгер slog
+// initLogger инициализирует логгер slog и на stdout, и в файл
 func initLogger() *slog.Logger {
 	opts := &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}
 
-	handler := slog.NewTextHandler(os.Stderr, opts)
+	consoleHandler := slog.NewTextHandler(os.Stderr, opts)
+
+	// Путь к лог-файлу можно переопределить через переменную окружения LOG_FILE
+	logFilePath := os.Getenv("LOG_FILE")
+	if logFilePath == "" {
+		logFilePath = "reelser-bot.log"
+	}
+
+	var handler slog.Handler = consoleHandler
+
+	if f, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+		fileHandler := slog.NewTextHandler(f, opts)
+		handler = &multiHandler{handlers: []slog.Handler{consoleHandler, fileHandler}}
+	} else {
+		// Если файл открыть не удалось — продолжаем логировать только в консоль
+		consoleHandler.Handle(
+			context.Background(),
+			slog.Record{
+				Time:    time.Now(),
+				Level:   slog.LevelWarn,
+				Message: "Failed to open log file, logging only to stderr",
+			},
+		)
+	}
+
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
 
 	return logger
+}
+
+// multiHandler отправляет записи в несколько хендлеров
+type multiHandler struct {
+	handlers []slog.Handler
+}
+
+func (m *multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, h := range m.handlers {
+		if h.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *multiHandler) Handle(ctx context.Context, r slog.Record) error {
+	for _, h := range m.handlers {
+		// Игнорируем ошибки отдельных хендлеров, чтобы не блокировать логирование
+		_ = h.Handle(ctx, r)
+	}
+	return nil
+}
+
+func (m *multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	newHandlers := make([]slog.Handler, len(m.handlers))
+	for i, h := range m.handlers {
+		newHandlers[i] = h.WithAttrs(attrs)
+	}
+	return &multiHandler{handlers: newHandlers}
+}
+
+func (m *multiHandler) WithGroup(name string) slog.Handler {
+	newHandlers := make([]slog.Handler, len(m.handlers))
+	for i, h := range m.handlers {
+		newHandlers[i] = h.WithGroup(name)
+	}
+	return &multiHandler{handlers: newHandlers}
 }
