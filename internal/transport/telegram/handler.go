@@ -73,6 +73,16 @@ func (h *Handler) startWorkers() {
 	for i := 0; i < h.workerCount; i++ {
 		workerID := i + 1
 		go func(id int) {
+			// Обработка паник в воркерах
+			defer func() {
+				if r := recover(); r != nil {
+					h.logger.Error("Panic recovered in download worker",
+						slog.Int("worker_id", id),
+						slog.Any("panic", r),
+					)
+				}
+			}()
+
 			h.logger.Info("Download worker started", slog.Int("worker_id", id))
 			for req := range h.downloadQueue {
 				h.processDownload(req)
@@ -83,6 +93,15 @@ func (h *Handler) startWorkers() {
 
 // HandleUpdate обрабатывает обновление от Telegram
 func (h *Handler) HandleUpdate(ctx context.Context, update tgbotapi.Update) {
+	// Обработка паник для предотвращения падения приложения
+	defer func() {
+		if r := recover(); r != nil {
+			h.logger.Error("Panic recovered in HandleUpdate",
+				slog.Any("panic", r),
+			)
+		}
+	}()
+
 	switch {
 	case update.Message != nil:
 		h.handleMessage(ctx, update.Message)
@@ -96,15 +115,46 @@ func (h *Handler) HandleUpdate(ctx context.Context, update tgbotapi.Update) {
 }
 
 func (h *Handler) handleMessage(ctx context.Context, message *tgbotapi.Message) {
+	// Проверка на nil для критических полей
+	if message == nil {
+		h.logger.Warn("Received nil message")
+		return
+	}
+
+	if message.From == nil {
+		h.logger.Warn("Received message without From field", slog.Int64("chat_id", message.Chat.ID))
+		return
+	}
+
+	if message.Chat == nil {
+		h.logger.Warn("Received message without Chat field")
+		return
+	}
+
 	chatID := message.Chat.ID
 	userID := int64(message.From.ID)
+
+	username := ""
+	if message.From.UserName != "" {
+		username = message.From.UserName
+	}
+
+	text := ""
+	if message.Text != "" {
+		text = message.Text
+	}
+
+	chatType := ""
+	if message.Chat.Type != "" {
+		chatType = message.Chat.Type
+	}
 
 	h.logger.Info("Received message",
 		slog.Int64("chat_id", chatID),
 		slog.Int64("user_id", userID),
-		slog.String("username", message.From.UserName),
-		slog.String("text", message.Text),
-		slog.String("chat_type", message.Chat.Type),
+		slog.String("username", username),
+		slog.String("text", text),
+		slog.String("chat_type", chatType),
 	)
 
 	// В группах и супергруппах бот должен быть упомянут
@@ -133,6 +183,11 @@ func (h *Handler) handleMessage(ctx context.Context, message *tgbotapi.Message) 
 
 // handleCommand обрабатывает команды бота
 func (h *Handler) handleCommand(ctx context.Context, message *tgbotapi.Message) {
+	if message == nil || message.Chat == nil {
+		h.logger.Warn("Invalid message in handleCommand")
+		return
+	}
+
 	chatID := message.Chat.ID
 	command := message.Command()
 
@@ -164,10 +219,19 @@ func (h *Handler) handleCommand(ctx context.Context, message *tgbotapi.Message) 
 
 // handleTextMessage обрабатывает текстовые сообщения со ссылками
 func (h *Handler) handleTextMessage(ctx context.Context, message *tgbotapi.Message) {
+	if message == nil || message.Chat == nil {
+		h.logger.Warn("Invalid message in handleTextMessage")
+		return
+	}
+
+	if message.Text == "" {
+		return
+	}
+
 	chatID := message.Chat.ID
 	text := strings.TrimSpace(message.Text)
 
-	if message.Chat != nil && (message.Chat.Type == "group" || message.Chat.Type == "supergroup") {
+	if message.Chat.Type == "group" || message.Chat.Type == "supergroup" {
 		if !h.isBotMentioned(message) {
 			return
 		}
@@ -310,10 +374,18 @@ func (h *Handler) deleteOriginalMessage(req *downloadRequest) {
 
 // handleAuthFlow обрабатывает сообщения от неавторизованных пользователей
 func (h *Handler) handleAuthFlow(ctx context.Context, message *tgbotapi.Message) {
+	if message == nil || message.From == nil || message.Chat == nil {
+		h.logger.Warn("Invalid message in handleAuthFlow")
+		return
+	}
+
 	chatID := message.Chat.ID
 	userID := int64(message.From.ID)
 
-	text := h.removeBotMentionFromText(message.Text)
+	text := ""
+	if message.Text != "" {
+		text = h.removeBotMentionFromText(message.Text)
+	}
 
 	// Если это команда или пустое сообщение — просто просим отправить токен
 	if text == "" || message.IsCommand() {
@@ -331,13 +403,28 @@ func (h *Handler) handleAuthFlow(ctx context.Context, message *tgbotapi.Message)
 }
 
 func (h *Handler) handleInlineQuery(ctx context.Context, inlineQuery *tgbotapi.InlineQuery) {
+	if inlineQuery == nil {
+		h.logger.Warn("Received nil inline query")
+		return
+	}
+
+	if inlineQuery.From == nil {
+		h.logger.Warn("Received inline query without From field", slog.String("query_id", inlineQuery.ID))
+		return
+	}
+
 	queryText := strings.TrimSpace(inlineQuery.Query)
 	userID := int64(inlineQuery.From.ID)
+
+	username := ""
+	if inlineQuery.From.UserName != "" {
+		username = inlineQuery.From.UserName
+	}
 
 	h.logger.Info("Received inline query",
 		slog.String("query_id", inlineQuery.ID),
 		slog.Int64("user_id", userID),
-		slog.String("username", inlineQuery.From.UserName),
+		slog.String("username", username),
 		slog.String("query", queryText),
 	)
 
@@ -406,6 +493,16 @@ func (h *Handler) buildInlineResults(queryID, rawQuery string) []interface{} {
 }
 
 func (h *Handler) handleChosenInlineResult(ctx context.Context, result *tgbotapi.ChosenInlineResult) {
+	if result == nil {
+		h.logger.Warn("Received nil chosen inline result")
+		return
+	}
+
+	if result.From == nil {
+		h.logger.Warn("Received chosen inline result without From field")
+		return
+	}
+
 	url := h.extractURL(result.Query)
 	if url == "" {
 		h.logger.Warn("Chosen inline result without URL", slog.String("query", result.Query))
@@ -457,7 +554,12 @@ func (h *Handler) maxAllowedFileSize() int64 {
 
 // isBotMentioned проверяет, упомянут ли бот в сообщении
 func (h *Handler) isBotMentioned(message *tgbotapi.Message) bool {
-	if h.botUsername == "" {
+	if h.botUsername == "" || message == nil {
+		return false
+	}
+
+	// Проверяем наличие текста
+	if message.Text == "" {
 		return false
 	}
 
@@ -465,10 +567,13 @@ func (h *Handler) isBotMentioned(message *tgbotapi.Message) bool {
 	if len(message.Entities) > 0 {
 		for _, entity := range message.Entities {
 			if entity.Type == "mention" {
-				mention := message.Text[entity.Offset : entity.Offset+entity.Length]
-				// Убираем @ и сравниваем
-				if strings.TrimPrefix(mention, "@") == h.botUsername {
-					return true
+				// Проверяем границы перед обращением к строке
+				if entity.Offset >= 0 && entity.Offset+entity.Length <= len(message.Text) {
+					mention := message.Text[entity.Offset : entity.Offset+entity.Length]
+					// Убираем @ и сравниваем
+					if strings.TrimPrefix(mention, "@") == h.botUsername {
+						return true
+					}
 				}
 			}
 		}

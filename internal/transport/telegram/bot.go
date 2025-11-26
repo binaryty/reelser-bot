@@ -71,7 +71,17 @@ func (b *Bot) Start() error {
 			return nil
 
 		case update := <-updates:
-			go b.handler.HandleUpdate(b.ctx, update)
+			// Запускаем обработку в отдельной горутине с обработкой паник
+			go func(u tgbotapi.Update) {
+				defer func() {
+					if r := recover(); r != nil {
+						b.logger.Error("Panic recovered in update handler",
+							slog.Any("panic", r),
+						)
+					}
+				}()
+				b.handler.HandleUpdate(b.ctx, u)
+			}(update)
 		}
 	}
 }
