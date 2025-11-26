@@ -44,5 +44,5 @@ temp/
 *.dll
 *.so
 *.dylib
-
+*.txt
 
