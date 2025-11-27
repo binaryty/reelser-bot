@@ -306,27 +306,28 @@ func (h *Handler) processDownload(req *downloadRequest) {
 		slog.String("source", req.source),
 	)
 
-	filePath, err := h.downloader.Download(req.ctx, req.url)
+	// Используем DownloadWithType для определения типа медиа
+	result, err := h.downloader.DownloadWithType(req.ctx, req.url)
 	if err != nil {
 		h.clearStatusMessage(req)
-		h.logger.Error("Failed to download video",
+		h.logger.Error("Failed to download media",
 			slog.String("url", req.url),
 			slog.Any("error", err),
 		)
-		h.sendMessage(req.chatID, fmt.Sprintf("❌ Ошибка при загрузке видео: %s", err.Error()))
+		h.sendMessage(req.chatID, fmt.Sprintf("❌ Ошибка при загрузке медиа: %s", err.Error()))
 		return
 	}
 	defer func() {
-		if err := h.downloader.Cleanup(filePath); err != nil {
-			h.logger.Warn("Failed to cleanup file", slog.String("file", filePath), slog.Any("error", err))
+		if err := h.downloader.Cleanup(result.FilePath); err != nil {
+			h.logger.Warn("Failed to cleanup file", slog.String("file", result.FilePath), slog.Any("error", err))
 		}
 	}()
 
 	h.clearStatusMessage(req)
 
-	fileSize, err := h.downloader.GetFileSize(filePath)
+	fileSize, err := h.downloader.GetFileSize(result.FilePath)
 	if err != nil {
-		h.logger.Error("Failed to get file size", slog.String("file", filePath), slog.Any("error", err))
+		h.logger.Error("Failed to get file size", slog.String("file", result.FilePath), slog.Any("error", err))
 		h.sendMessage(req.chatID, "❌ Ошибка при проверке размера файла.")
 		return
 	}
@@ -334,26 +335,65 @@ func (h *Handler) processDownload(req *downloadRequest) {
 	maxAllowed := h.maxAllowedFileSize()
 	if fileSize > maxAllowed {
 		h.sendMessage(req.chatID, fmt.Sprintf(
-			"❌ Видео слишком большое (%.2f MB). Ограничение Telegram %.0f MB.",
+			"❌ Файл слишком большой (%.2f MB). Ограничение Telegram %.0f MB.",
 			float64(fileSize)/(1024*1024),
 			float64(maxAllowed)/(1024*1024),
 		))
 		return
 	}
 
-	if err := h.sendVideo(req.chatID, filePath); err != nil {
-		h.logger.Error("Failed to send video",
-			slog.String("file", filePath),
-			slog.Any("error", err),
+	// Отправляем медиа в зависимости от типа
+	switch result.Type {
+	case downloader.MediaTypeVideo:
+		if err := h.sendVideo(req.chatID, result.FilePath); err != nil {
+			h.logger.Error("Failed to send video",
+				slog.String("file", result.FilePath),
+				slog.Any("error", err),
+			)
+			h.sendMessage(req.chatID, fmt.Sprintf("❌ Ошибка при отправке видео: %s", err.Error()))
+			return
+		}
+		h.logger.Info("Video delivered successfully",
+			slog.Int64("chat_id", req.chatID),
+			slog.String("url", req.url),
 		)
-		h.sendMessage(req.chatID, fmt.Sprintf("❌ Ошибка при отправке видео: %s", err.Error()))
+
+	case downloader.MediaTypePhoto:
+		if err := h.sendPhoto(req.chatID, result.FilePath); err != nil {
+			h.logger.Error("Failed to send photo",
+				slog.String("file", result.FilePath),
+				slog.Any("error", err),
+			)
+			h.sendMessage(req.chatID, fmt.Sprintf("❌ Ошибка при отправке фото: %s", err.Error()))
+			return
+		}
+		h.logger.Info("Photo delivered successfully",
+			slog.Int64("chat_id", req.chatID),
+			slog.String("url", req.url),
+		)
+
+	case downloader.MediaTypeAudio:
+		if err := h.sendAudio(req.chatID, result.FilePath); err != nil {
+			h.logger.Error("Failed to send audio",
+				slog.String("file", result.FilePath),
+				slog.Any("error", err),
+			)
+			h.sendMessage(req.chatID, fmt.Sprintf("❌ Ошибка при отправке аудио: %s", err.Error()))
+			return
+		}
+		h.logger.Info("Audio delivered successfully",
+			slog.Int64("chat_id", req.chatID),
+			slog.String("url", req.url),
+		)
+
+	default:
+		h.logger.Error("Unknown media type",
+			slog.String("type", string(result.Type)),
+			slog.String("file", result.FilePath),
+		)
+		h.sendMessage(req.chatID, "❌ Неподдерживаемый тип медиа.")
 		return
 	}
-
-	h.logger.Info("Video delivered successfully",
-		slog.Int64("chat_id", req.chatID),
-		slog.String("url", req.url),
-	)
 
 	h.deleteOriginalMessage(req)
 }
@@ -695,5 +735,91 @@ func (h *Handler) sendVideo(chatID int64, filePath string) error {
 	}
 
 	h.logger.Info("Video sent successfully", slog.Int64("chat_id", chatID))
+	return nil
+}
+
+// sendPhoto отправляет фото файл
+func (h *Handler) sendPhoto(chatID int64, filePath string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	// Получаем информацию о файле
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to get file info: %w", err)
+	}
+
+	// Проверяем размер файла перед отправкой (для фото лимит 10MB)
+	const maxPhotoSize = int64(10 * 1024 * 1024)
+	if fileInfo.Size() > maxPhotoSize {
+		return fmt.Errorf("photo size %d exceeds maximum allowed size %d", fileInfo.Size(), maxPhotoSize)
+	}
+
+	// Используем FileReader для потоковой отправки
+	fileReader := tgbotapi.FileReader{
+		Name:   fileInfo.Name(),
+		Reader: file,
+	}
+
+	// Отправляем фото
+	photo := tgbotapi.NewPhoto(chatID, fileReader)
+
+	h.logger.Info("Sending photo",
+		slog.Int64("chat_id", chatID),
+		slog.String("file", filePath),
+		slog.Int64("size", fileInfo.Size()),
+	)
+
+	if _, err := h.bot.Send(photo); err != nil {
+		return fmt.Errorf("failed to send photo: %w", err)
+	}
+
+	h.logger.Info("Photo sent successfully", slog.Int64("chat_id", chatID))
+	return nil
+}
+
+// sendAudio отправляет аудио файл
+func (h *Handler) sendAudio(chatID int64, filePath string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	// Получаем информацию о файле
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to get file info: %w", err)
+	}
+
+	// Проверяем размер файла перед отправкой (для аудио лимит 50MB)
+	maxAllowed := h.maxAllowedFileSize()
+	if fileInfo.Size() > maxAllowed {
+		return fmt.Errorf("audio size %d exceeds maximum allowed size %d", fileInfo.Size(), maxAllowed)
+	}
+
+	// Используем FileReader для потоковой отправки
+	fileReader := tgbotapi.FileReader{
+		Name:   fileInfo.Name(),
+		Reader: file,
+	}
+
+	// Отправляем аудио
+	audio := tgbotapi.NewAudio(chatID, fileReader)
+
+	h.logger.Info("Sending audio",
+		slog.Int64("chat_id", chatID),
+		slog.String("file", filePath),
+		slog.Int64("size", fileInfo.Size()),
+	)
+
+	if _, err := h.bot.Send(audio); err != nil {
+		return fmt.Errorf("failed to send audio: %w", err)
+	}
+
+	h.logger.Info("Audio sent successfully", slog.Int64("chat_id", chatID))
 	return nil
 }
