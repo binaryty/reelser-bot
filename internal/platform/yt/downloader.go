@@ -1,6 +1,7 @@
 package yt
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,9 +13,26 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// VideoQuality представляет доступное качество видео
+type VideoQuality struct {
+	FormatID   string
+	Resolution string // 1080p, 720p, etc.
+	Height     int
+	Width      int
+	Filesize   int64
+	Ext        string
+	Vcodec     string
+	Acodec     string
+	IsAudioOnly bool
+}
+
+// ProgressCallback функция для обновления прогресса
+type ProgressCallback func(percent int, downloaded int64, total int64, speed string, eta string)
 
 // Downloader реализует загрузку видео с YouTube
 type Downloader struct {
@@ -36,43 +54,40 @@ func NewDownloader(logger *slog.Logger, tempDir, videoQuality string) *Downloade
 	}
 }
 
-const maxFileSizeMB = 50
-
-// Download скачивает видео с YouTube используя yt-dlp с retry logic
-// и fallback на SaveFrom API если yt-dlp не справляется
-// Автоматически выбирает качество чтобы файл был < 50MB
+// Download скачивает видео с YouTube используя yt-dlp
 // Возвращает путь к скачанному файлу
 func (d *Downloader) Download(ctx context.Context, videoURL string) (string, error) {
-	d.logger.Info("Starting YouTube video download", slog.String("url", videoURL))
+	return d.DownloadWithQuality(ctx, videoURL, "best", nil)
+}
+
+// DownloadWithQuality скачивает видео с выбранным качеством
+// quality: "1080", "720", "480", "audio" или "best"
+// progressCallback вызывается для обновления прогресса
+func (d *Downloader) DownloadWithQuality(
+	ctx context.Context,
+	videoURL string,
+	quality string,
+	progressCallback ProgressCallback,
+) (string, error) {
+	d.logger.Info("Starting YouTube video download",
+		slog.String("url", videoURL),
+		slog.String("quality", quality),
+	)
 
 	// Проверяем наличие yt-dlp
 	if _, err := exec.LookPath("yt-dlp"); err != nil {
 		d.logger.Warn("yt-dlp not found, trying SaveFrom fallback",
 			slog.String("url", videoURL),
 		)
-		return d.downloadViaSaveFrom(ctx, videoURL)
+		return d.downloadViaSaveFrom(ctx, videoURL, progressCallback)
 	}
 
-	// Получаем информацию о видео и выбираем подходящий формат
-	format, err := d.selectFormatBySize(ctx, videoURL)
-	if err != nil {
-		d.logger.Warn("Could not determine video size, using default format",
-			slog.String("url", videoURL),
-			slog.Any("error", err),
-		)
-		format = d.getFormatString()
-	}
+	// Формируем формат строку на основе качества
+	format := d.qualityToFormat(quality)
 
-	d.logger.Info("Selected format", slog.String("format", format), slog.String("url", videoURL))
-
-	// Пробуем скачать с yt-dlp и retry logic
-	file, err := d.downloadWithRetry(ctx, videoURL, format)
+	// Скачиваем с прогрессом
+	file, err := d.downloadWithProgress(ctx, videoURL, format, progressCallback)
 	if err == nil {
-		// Проверяем размер файла
-		if info, err := os.Stat(file); err == nil {
-			sizeMB := float64(info.Size()) / (1024 * 1024)
-			d.logger.Info("Downloaded file size", slog.Float64("size_mb", sizeMB), slog.String("file", file))
-		}
 		return file, nil
 	}
 
@@ -82,112 +97,270 @@ func (d *Downloader) Download(ctx context.Context, videoURL string) (string, err
 	)
 
 	// Fallback на SaveFrom
-	return d.downloadViaSaveFrom(ctx, videoURL)
+	return d.downloadViaSaveFrom(ctx, videoURL, progressCallback)
 }
 
-// downloadWithRetry пытается скачать видео с retry logic
-func (d *Downloader) downloadWithRetry(ctx context.Context, videoURL string, format string) (string, error) {
-	var lastErr error
+// qualityToFormat преобразует запрошенное качество в форматную строку yt-dlp
+func (d *Downloader) qualityToFormat(quality string) string {
+	switch quality {
+	case "1080":
+		return "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]"
+	case "720":
+		return "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]"
+	case "480":
+		return "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]"
+	case "audio":
+		return "bestaudio[ext=m4a]/bestaudio/best"
+	case "best":
+		return "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+	default:
+		return "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+	}
+}
 
-	for attempt := 1; attempt <= 3; attempt++ {
-		d.logger.Info("Download attempt",
-			slog.Int("attempt", attempt),
-			slog.String("url", videoURL),
-		)
+// GetAvailableQualities возвращает список доступных качеств для видео
+func (d *Downloader) GetAvailableQualities(ctx context.Context, videoURL string) ([]VideoQuality, error) {
+	// Получаем информацию о видео
+	args := []string{
+		videoURL,
+		"-J",
+		"--no-playlist",
+		"--no-warnings",
+	}
 
-		file, err := d.tryDownload(ctx, videoURL, attempt, format)
-		if err == nil {
-			return file, nil
+	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get video info: %w", err)
+	}
+
+	var videoInfo struct {
+		Title    string `json:"title"`
+		Duration int    `json:"duration"`
+		Formats  []struct {
+			FormatID   string `json:"format_id"`
+			Ext        string `json:"ext"`
+			Resolution string `json:"resolution"`
+			Height     int    `json:"height"`
+			Width      int    `json:"width"`
+			Filesize   int64  `json:"filesize"`
+			FilesizeApprox float64 `json:"filesize_approx"`
+			Vcodec     string `json:"vcodec"`
+			Acodec     string `json:"acodec"`
+		} `json:"formats"`
+	}
+
+	if err := json.Unmarshal(output, &videoInfo); err != nil {
+		return nil, fmt.Errorf("failed to parse video info: %w", err)
+	}
+
+	// Группируем форматы по качеству
+	qualityMap := make(map[int]*VideoQuality)
+	hasAudio := false
+
+	for _, f := range videoInfo.Formats {
+		// Пропускаем аудио-only форматы для видео списка
+		if f.Vcodec == "none" || f.Vcodec == "" {
+			if f.Acodec != "none" && f.Acodec != "" {
+				hasAudio = true
+			}
+			continue
 		}
 
-		lastErr = err
+		// Берем только mp4
+		if f.Ext != "mp4" && f.Ext != "" {
+			continue
+		}
 
-		// Если это не последняя попытка, ждём перед следующей
-		if attempt < 3 {
-			sleepTime := time.Duration(attempt*3) * time.Second
-			d.logger.Info("Waiting before retry",
-				slog.Duration("sleep", sleepTime),
-			)
-			select {
-			case <-ctx.Done():
-				return "", ctx.Err()
-			case <-time.After(sleepTime):
+		// Округляем высоту до стандартных значений
+		height := d.normalizeHeight(f.Height)
+		if height == 0 {
+			continue
+		}
+
+		// Используем наилучший формат для данной высоты
+		size := f.Filesize
+		if size == 0 && f.FilesizeApprox > 0 {
+			size = int64(f.FilesizeApprox)
+		}
+
+		if existing, ok := qualityMap[height]; !ok || size > existing.Filesize {
+			qualityMap[height] = &VideoQuality{
+				FormatID:   f.FormatID,
+				Resolution: fmt.Sprintf("%dp", height),
+				Height:     height,
+				Width:      f.Width,
+				Filesize:   size,
+				Ext:        f.Ext,
+				Vcodec:     f.Vcodec,
+				Acodec:     f.Acodec,
 			}
 		}
 	}
 
-	return "", fmt.Errorf("all yt-dlp attempts failed: %w", lastErr)
+	// Преобразуем map в слайс
+	var qualities []VideoQuality
+	for _, q := range qualityMap {
+		qualities = append(qualities, *q)
+	}
+
+	// Сортируем по убыванию качества
+	for i := 0; i < len(qualities)-1; i++ {
+		for j := i + 1; j < len(qualities); j++ {
+			if qualities[i].Height < qualities[j].Height {
+				qualities[i], qualities[j] = qualities[j], qualities[i]
+			}
+		}
+	}
+
+	// Добавляем опцию audio-only если есть аудио
+	if hasAudio {
+		qualities = append(qualities, VideoQuality{
+			Resolution:  "Audio",
+			IsAudioOnly: true,
+		})
+	}
+
+	return qualities, nil
 }
 
-// tryDownload выполняет одну попытку скачивания с разными параметрами
-func (d *Downloader) tryDownload(ctx context.Context, videoURL string, attempt int, format string) (string, error) {
-	// Создаем временный файл для сохранения видео
+// normalizeHeight округляет высоту до стандартных значений
+func (d *Downloader) normalizeHeight(height int) int {
+	if height >= 1080 {
+		return 1080
+	} else if height >= 720 {
+		return 720
+	} else if height >= 480 {
+		return 480
+	} else if height >= 360 {
+		return 360
+	}
+	return 0
+}
+
+// downloadWithProgress скачивает видео с отслеживанием прогресса
+func (d *Downloader) downloadWithProgress(
+	ctx context.Context,
+	videoURL string,
+	format string,
+	progressCallback ProgressCallback,
+) (string, error) {
 	outputFile := filepath.Join(d.tempDir, "yt_%(title)s.%(ext)s")
 
-	// Формируем команду yt-dlp с разными параметрами для каждой попытки
-	args := d.buildArgs(videoURL, outputFile, attempt, format)
+	args := []string{
+		videoURL,
+		"-o", outputFile,
+		"-f", format,
+		"--no-playlist",
+		"--no-warnings",
+		"--newline",
+		"--progress",
+	}
 
 	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
 	cmd.Dir = d.tempDir
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		outputStr := string(output)
-		d.logger.Error("Download attempt failed",
-			slog.Int("attempt", attempt),
-			slog.String("url", videoURL),
-			slog.Any("error", err),
-			slog.String("output", truncateString(outputStr, 2000)),
-		)
-		return "", fmt.Errorf("attempt %d failed: %w. Output: %s", attempt, err, truncateString(outputStr, 1000))
+	// Если есть callback, перехватываем вывод для прогресса
+	if progressCallback != nil {
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return "", fmt.Errorf("failed to create stdout pipe: %w", err)
+		}
+
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			return "", fmt.Errorf("failed to create stderr pipe: %w", err)
+		}
+
+		if err := cmd.Start(); err != nil {
+			return "", fmt.Errorf("failed to start download: %w", err)
+		}
+
+		// Читаем прогресс
+		go d.parseProgress(stdout, progressCallback)
+		go d.parseProgress(stderr, progressCallback)
+
+		if err := cmd.Wait(); err != nil {
+			return "", fmt.Errorf("download failed: %w", err)
+		}
+	} else {
+		// Без прогресса - просто выполняем команду
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("download failed: %w. Output: %s", err, string(output))
+		}
 	}
 
-	// Находим скачанный файл
 	return d.findDownloadedFile(videoURL)
 }
 
-// buildArgs формирует аргументы для yt-dlp в зависимости от попытки
-func (d *Downloader) buildArgs(videoURL, outputFile string, attempt int, format string) []string {
-	args := []string{
-		videoURL,
-		"-o", outputFile,
-		"--no-playlist",
-		"--no-warnings",
-		"--newline",
+// parseProgress парсит вывод yt-dlp и вызывает callback
+func (d *Downloader) parseProgress(reader io.Reader, callback ProgressCallback) {
+	scanner := bufio.NewScanner(reader)
+	for scanner.Scan() {
+		line := scanner.Text()
+		
+		// Ищем строки прогресса: [download] 45.2% of ~50.00MiB at 2.5MiB/s ETA 00:15
+		if strings.Contains(line, "[download]") && strings.Contains(line, "%") {
+			percent, downloaded, total, speed, eta := d.parseProgressLine(line)
+			if percent >= 0 {
+				callback(percent, downloaded, total, speed, eta)
+			}
+		}
 	}
-
-	switch attempt {
-	case 1:
-		// Первая попытка - используем выбранный формат
-		args = append(args, "-f", format)
-
-	case 2:
-		// Вторая попытка - с задержкой и специфичными флагами для YouTube
-		// Используем более низкое качество
-		args = append(args,
-			"-f", "worst[ext=mp4]/worst",
-			"--extractor-args", "youtube:player_client=web",
-			"--extractor-args", "youtube:player_skip=webpage,configs,js",
-			"--sleep-requests", "2",
-			"--add-header", "Accept-Language:en-US,en;q=0.9",
-			"--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-		)
-
-	case 3:
-		// Третья попытка - упрощенный формат и мобильный клиент
-		args = append(args,
-			"-f", "worst[ext=mp4]/worst",
-			"--extractor-args", "youtube:player_client=android",
-			"--user-agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-			"--geo-bypass",
-			"--extractor-args", "youtube:player_skip=webpage,configs,js,player_response",
-		)
-	}
-
-	return args
 }
 
-// findDownloadedFile находит скачанный файл в temp директории
+// parseProgressLine парсит строку прогресса
+func (d *Downloader) parseProgressLine(line string) (int, int64, int64, string, string) {
+	// Пример: [download] 45.2% of ~50.00MiB at 2.5MiB/s ETA 00:15
+	
+	// Извлекаем процент
+	percentRegex := regexp.MustCompile(`(\d+\.?\d*)%`)
+	percentMatch := percentRegex.FindStringSubmatch(line)
+	if len(percentMatch) < 2 {
+		return -1, 0, 0, "", ""
+	}
+	percent, _ := strconv.ParseFloat(percentMatch[1], 64)
+
+	// Извлекаем размер
+	sizeRegex := regexp.MustCompile(`of\s+~?(\d+\.?\d*)([KMGT]i?B)`)
+	sizeMatch := sizeRegex.FindStringSubmatch(line)
+	total := int64(0)
+	if len(sizeMatch) >= 3 {
+		sizeVal, _ := strconv.ParseFloat(sizeMatch[1], 64)
+		unit := sizeMatch[2]
+		switch {
+		case strings.HasPrefix(unit, "K"):
+			total = int64(sizeVal * 1024)
+		case strings.HasPrefix(unit, "M"):
+			total = int64(sizeVal * 1024 * 1024)
+		case strings.HasPrefix(unit, "G"):
+			total = int64(sizeVal * 1024 * 1024 * 1024)
+		}
+	}
+
+	downloaded := int64(float64(total) * percent / 100)
+
+	// Извлекаем скорость
+	speedRegex := regexp.MustCompile(`at\s+(\d+\.?\d*\s*[KMGT]i?B/s)`)
+	speedMatch := speedRegex.FindStringSubmatch(line)
+	speed := ""
+	if len(speedMatch) >= 2 {
+		speed = speedMatch[1]
+	}
+
+	// Извлекаем ETA
+	etaRegex := regexp.MustCompile(`ETA\s+(\d+:\d+)`)
+	etaMatch := etaRegex.FindStringSubmatch(line)
+	eta := ""
+	if len(etaMatch) >= 2 {
+		eta = etaMatch[1]
+	}
+
+	return int(percent), downloaded, total, speed, eta
+}
+
+// findDownloadedFile находит скачанный файл
 func (d *Downloader) findDownloadedFile(videoURL string) (string, error) {
 	files, err := filepath.Glob(filepath.Join(d.tempDir, "yt_*"))
 	if err != nil {
@@ -225,23 +398,19 @@ func (d *Downloader) findDownloadedFile(videoURL string) (string, error) {
 }
 
 // downloadViaSaveFrom скачивает видео через SaveFrom API
-func (d *Downloader) downloadViaSaveFrom(ctx context.Context, videoURL string) (string, error) {
+func (d *Downloader) downloadViaSaveFrom(ctx context.Context, videoURL string, progressCallback ProgressCallback) (string, error) {
 	d.logger.Info("Trying SaveFrom fallback", slog.String("url", videoURL))
 
-	// Получаем прямую ссылку на видео через SaveFrom API
 	downloadURL, err := d.getSaveFromURL(ctx, videoURL)
 	if err != nil {
 		return "", fmt.Errorf("savefrom failed: %w", err)
 	}
 
-	// Скачиваем видео по прямой ссылке
-	return d.downloadFromURL(ctx, downloadURL, videoURL)
+	return d.downloadFromURL(ctx, downloadURL, videoURL, progressCallback)
 }
 
-// getSaveFromURL получает прямую ссылку на видео через SaveFrom API
+// getSaveFromURL получает прямую ссылку через SaveFrom
 func (d *Downloader) getSaveFromURL(ctx context.Context, videoURL string) (string, error) {
-	// SaveFrom API endpoint
-	// Формируем запрос к SaveFrom API
 	apiURL := fmt.Sprintf("https://savefrom.net/save-from.php?url=%s", url.QueryEscape(videoURL))
 
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
@@ -251,7 +420,6 @@ func (d *Downloader) getSaveFromURL(ctx context.Context, videoURL string) (strin
 
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	req.Header.Set("Referer", "https://savefrom.net/")
 
 	resp, err := d.client.Do(req)
@@ -269,11 +437,9 @@ func (d *Downloader) getSaveFromURL(ctx context.Context, videoURL string) (strin
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
 
-	// Пытаемся извлечь URL из JSON ответа
 	bodyStr := string(body)
 
-	// Ищем ссылку в разных форматах ответа
-	// Формат 1: JSON с полем url
+	// Ищем ссылку в JSON
 	var jsonResponse struct {
 		URL string `json:"url"`
 	}
@@ -281,15 +447,14 @@ func (d *Downloader) getSaveFromURL(ctx context.Context, videoURL string) (strin
 		return jsonResponse.URL, nil
 	}
 
-	// Формат 2: Ищем ссылку на видео в HTML/тексте
-	// Ищем ссылки на video/mp4
+	// Ищем mp4 ссылки
 	videoURLPattern := regexp.MustCompile(`(https?://[^"\s]+\.mp4[^"\s]*)`)
 	matches := videoURLPattern.FindStringSubmatch(bodyStr)
 	if len(matches) > 0 {
 		return matches[1], nil
 	}
 
-	// Ищем в JavaScript объектах
+	// Ищем googlevideo ссылки
 	jsURLPattern := regexp.MustCompile(`"(https?://[^"]+)"`)
 	jsMatches := jsURLPattern.FindAllStringSubmatch(bodyStr, -1)
 	for _, match := range jsMatches {
@@ -302,7 +467,7 @@ func (d *Downloader) getSaveFromURL(ctx context.Context, videoURL string) (strin
 }
 
 // downloadFromURL скачивает файл по прямой ссылке
-func (d *Downloader) downloadFromURL(ctx context.Context, downloadURL, originalURL string) (string, error) {
+func (d *Downloader) downloadFromURL(ctx context.Context, downloadURL, originalURL string, progressCallback ProgressCallback) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create download request: %w", err)
@@ -321,7 +486,7 @@ func (d *Downloader) downloadFromURL(ctx context.Context, downloadURL, originalU
 		return "", fmt.Errorf("download returned status: %d", resp.StatusCode)
 	}
 
-	// Создаем временный файл
+	totalSize := resp.ContentLength
 	outputFile := filepath.Join(d.tempDir, fmt.Sprintf("yt_savefrom_%d.mp4", time.Now().Unix()))
 
 	file, err := os.Create(outputFile)
@@ -330,8 +495,17 @@ func (d *Downloader) downloadFromURL(ctx context.Context, downloadURL, originalU
 	}
 	defer file.Close()
 
-	// Копируем данные
-	_, err = io.Copy(file, resp.Body)
+	// Если есть callback, отслеживаем прогресс
+	var reader io.Reader = resp.Body
+	if progressCallback != nil && totalSize > 0 {
+		reader = &progressReader{
+			reader:   resp.Body,
+			total:    totalSize,
+			callback: progressCallback,
+		}
+	}
+
+	_, err = io.Copy(file, reader)
 	if err != nil {
 		os.Remove(outputFile)
 		return "", fmt.Errorf("failed to save video: %w", err)
@@ -345,159 +519,29 @@ func (d *Downloader) downloadFromURL(ctx context.Context, downloadURL, originalU
 	return outputFile, nil
 }
 
-// getFormatString возвращает строку формата для yt-dlp в зависимости от качества
-func (d *Downloader) getFormatString() string {
-	switch strings.ToLower(d.videoQuality) {
-	case "best":
-		return "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
-	case "worst":
-		return "worst[ext=mp4]/worst"
-	default:
-		return "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
-	}
+// progressReader оборачивает reader для отслеживания прогресса
+type progressReader struct {
+	reader     io.Reader
+	total      int64
+	downloaded int64
+	callback   ProgressCallback
+	lastPercent int
 }
 
-// selectFormatBySize выбирает формат видео исходя из ограничения на размер (50MB)
-func (d *Downloader) selectFormatBySize(ctx context.Context, videoURL string) (string, error) {
-	// Получаем информацию о форматах видео
-	args := []string{
-		videoURL,
-		"-J", // JSON output
-		"--no-playlist",
-		"--no-warnings",
-		"--quiet",
-	}
-
-	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("failed to get video info: %w", err)
-	}
-
-	var videoInfo struct {
-		Duration float64 `json:"duration"`
-		Formats  []struct {
-			FormatID   string  `json:"format_id"`
-			Ext        string  `json:"ext"`
-			Resolution string  `json:"resolution"`
-			Filesize   int64   `json:"filesize"`
-			FilesizeApprox float64 `json:"filesize_approx"`
-			Width      int     `json:"width"`
-			Height     int     `json:"height"`
-			Vcodec     string  `json:"vcodec"`
-			Acodec     string  `json:"acodec"`
-		} `json:"formats"`
-	}
-
-	if err := json.Unmarshal(output, &videoInfo); err != nil {
-		return "", fmt.Errorf("failed to parse video info: %w", err)
-	}
-
-	// Если видео короткое (< 5 минут), пробуем скачать в хорошем качестве
-	// Иначе выбираем формат поменьше
-	maxSizeBytes := int64(maxFileSizeMB * 1024 * 1024)
+func (pr *progressReader) Read(p []byte) (int, error) {
+	n, err := pr.reader.Read(p)
+	pr.downloaded += int64(n)
 	
-	// Фильтруем только mp4 форматы с видео
-	var suitableFormats []struct {
-		FormatID   string
-		Resolution string
-		Filesize   int64
-		Width      int
-		Height     int
-	}
-	
-	for _, f := range videoInfo.Formats {
-		// Пропускаем аудио-only форматы
-		if f.Vcodec == "none" || f.Vcodec == "" {
-			continue
-		}
-		// Берем только mp4
-		if f.Ext != "mp4" && f.Ext != "" {
-			continue
-		}
-		
-		size := f.Filesize
-		if size == 0 && f.FilesizeApprox > 0 {
-			size = int64(f.FilesizeApprox)
-		}
-		
-		suitableFormats = append(suitableFormats, struct {
-			FormatID   string
-			Resolution string
-			Filesize   int64
-			Width      int
-			Height     int
-		}{
-			FormatID:   f.FormatID,
-			Resolution: f.Resolution,
-			Filesize:   size,
-			Width:      f.Width,
-			Height:     f.Height,
-		})
-	}
-	
-	if len(suitableFormats) == 0 {
-		return "best[ext=mp4]/best", nil
-	}
-	
-	// Сортируем по качеству (разрешению) от высокого к низкому
-	for i := 0; i < len(suitableFormats)-1; i++ {
-		for j := i + 1; j < len(suitableFormats); j++ {
-			if suitableFormats[i].Height < suitableFormats[j].Height {
-				suitableFormats[i], suitableFormats[j] = suitableFormats[j], suitableFormats[i]
-			}
+	if pr.total > 0 {
+		percent := int(float64(pr.downloaded) * 100 / float64(pr.total))
+		// Обновляем только при изменении процента (минимум на 5%)
+		if percent >= pr.lastPercent+5 || percent == 100 {
+			pr.callback(percent, pr.downloaded, pr.total, "", "")
+			pr.lastPercent = percent
 		}
 	}
 	
-	// Для длинных видео (> 10 минут) сразу выбираем низкое качество
-	if videoInfo.Duration > 600 {
-		d.logger.Info("Long video detected, selecting low quality", 
-			slog.Float64("duration", videoInfo.Duration),
-		)
-		return "worst[ext=mp4]/worst", nil
-	}
-	
-	// Ищем формат с размером < 50MB
-	for _, f := range suitableFormats {
-		if f.Filesize > 0 && f.Filesize < maxSizeBytes {
-			d.logger.Info("Selected format by size",
-				slog.String("format_id", f.FormatID),
-				slog.String("resolution", f.Resolution),
-				slog.Int64("filesize", f.Filesize),
-			)
-			return f.FormatID, nil
-		}
-	}
-	
-	// Если не нашли подходящий по размеру, выбираем по разрешению
-	// Для видео > 5 минут - максимум 720p
-	// Для видео < 5 минут - максимум 1080p
-	maxHeight := 1080
-	if videoInfo.Duration > 300 {
-		maxHeight = 720
-	}
-	
-	for _, f := range suitableFormats {
-		if f.Height > 0 && f.Height <= maxHeight {
-			d.logger.Info("Selected format by resolution",
-				slog.String("format_id", f.FormatID),
-				slog.String("resolution", f.Resolution),
-				slog.Int("height", f.Height),
-			)
-			return f.FormatID, nil
-		}
-	}
-	
-	// Fallback на худшее качество
-	return "worst[ext=mp4]/worst", nil
-}
-
-// truncateString обрезает строку до указанной длины
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
+	return n, err
 }
 
 // IsValidURL проверяет, является ли URL валидной ссылкой на YouTube
@@ -529,4 +573,22 @@ func GetVideoID(videoURL string) string {
 	}
 
 	return ""
+}
+
+// GetVideoTitle возвращает название видео
+func (d *Downloader) GetVideoTitle(ctx context.Context, videoURL string) (string, error) {
+	args := []string{
+		videoURL,
+		"--get-title",
+		"--no-playlist",
+		"--no-warnings",
+	}
+
+	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get video title: %w", err)
+	}
+
+	return strings.TrimSpace(string(output)), nil
 }

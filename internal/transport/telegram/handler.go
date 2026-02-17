@@ -21,7 +21,7 @@ type Handler struct {
 	logger         *slog.Logger
 	downloader     *downloader.Service
 	auth           *auth.Service
-	maxVideoSize   int64 // в байтах
+	stateManager   *StateManager
 	downloadQueue  chan *downloadRequest
 	workerCount    int
 	queueSizeLimit int
@@ -58,7 +58,7 @@ func NewHandler(
 		logger:         logger,
 		downloader:     downloader,
 		auth:           authService,
-		maxVideoSize:   int64(maxVideoSizeMB) * 1024 * 1024, // конвертируем в байты
+		stateManager:   NewStateManager(),
 		workerCount:    workerCount,
 		queueSizeLimit: queueSize,
 		downloadQueue:  make(chan *downloadRequest, queueSize),
@@ -105,6 +105,8 @@ func (h *Handler) HandleUpdate(ctx context.Context, update tgbotapi.Update) {
 	switch {
 	case update.Message != nil:
 		h.handleMessage(ctx, update.Message)
+	case update.CallbackQuery != nil:
+		h.handleCallbackQuery(ctx, update.CallbackQuery)
 	case update.InlineQuery != nil:
 		h.handleInlineQuery(ctx, update.InlineQuery)
 	case update.ChosenInlineResult != nil:
@@ -253,6 +255,26 @@ func (h *Handler) handleTextMessage(ctx context.Context, message *tgbotapi.Messa
 		return
 	}
 
+	// Для YouTube показываем выбор качества
+	if h.downloader.IsYouTubeURL(url) {
+		statusMsg := h.sendMessage(chatID, "⏳ Анализирую видео...")
+		messageID := h.safeMessageID(statusMsg)
+
+		// Для Shorts сразу начинаем загрузку
+		if h.downloader.IsYouTubeShorts(url) {
+			h.editMessageText(chatID, messageID, "⏳ Загрузка Shorts...")
+			downloadCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+			h.downloadYouTubeVideo(downloadCtx, chatID, messageID, url, "best", true)
+			return
+		}
+
+		// Для обычных видео показываем выбор качества
+		h.showQualitySelection(chatID, url, messageID)
+		return
+	}
+
+	// Для других платформ используем стандартный процесс
 	statusMsg := h.sendMessage(chatID, "⏳ Запрос принят, начинаю загрузку видео...")
 	downloadCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 
@@ -324,23 +346,6 @@ func (h *Handler) processDownload(req *downloadRequest) {
 	}()
 
 	h.clearStatusMessage(req)
-
-	fileSize, err := h.downloader.GetFileSize(result.FilePath)
-	if err != nil {
-		h.logger.Error("Failed to get file size", slog.String("file", result.FilePath), slog.Any("error", err))
-		h.sendMessage(req.chatID, "❌ Ошибка при проверке размера файла.")
-		return
-	}
-
-	maxAllowed := h.maxAllowedFileSize()
-	if fileSize > maxAllowed {
-		h.sendMessage(req.chatID, fmt.Sprintf(
-			"❌ Файл слишком большой (%.2f MB). Ограничение Telegram %.0f MB.",
-			float64(fileSize)/(1024*1024),
-			float64(maxAllowed)/(1024*1024),
-		))
-		return
-	}
 
 	// Отправляем медиа в зависимости от типа
 	switch result.Type {
@@ -584,12 +589,264 @@ func (h *Handler) safeMessageID(msg *tgbotapi.Message) int {
 	return msg.MessageID
 }
 
-func (h *Handler) maxAllowedFileSize() int64 {
-	const telegramLimit = int64(50 * 1024 * 1024)
-	if h.maxVideoSize <= 0 || h.maxVideoSize > telegramLimit {
-		return telegramLimit
+// handleCallbackQuery обрабатывает callback queries от inline keyboards
+func (h *Handler) handleCallbackQuery(ctx context.Context, callbackQuery *tgbotapi.CallbackQuery) {
+	if callbackQuery == nil || callbackQuery.Message == nil {
+		return
 	}
-	return h.maxVideoSize
+
+	chatID := callbackQuery.Message.Chat.ID
+	messageID := callbackQuery.Message.MessageID
+	data := callbackQuery.Data
+
+	// Отвечаем на callback чтобы убрать "часики"
+	callback := tgbotapi.NewCallback(callbackQuery.ID, "")
+	h.bot.Request(callback)
+
+	// Проверяем, что это callback для выбора качества
+	if !strings.HasPrefix(data, "yt_quality:") {
+		return
+	}
+
+	// Парсим callback data: "yt_quality:{video_id}:{quality}"
+	parts := strings.Split(data, ":")
+	if len(parts) != 3 {
+		return
+	}
+
+	videoID := parts[1]
+	quality := parts[2]
+
+	// Получаем сохраненное состояние
+	state, exists := h.stateManager.Get(chatID, messageID)
+	if !exists {
+		h.editMessageText(chatID, messageID, "❌ Время выбора качества истекло. Отправь ссылку заново.")
+		return
+	}
+
+	// Удаляем inline keyboard
+	h.editMessageReplyMarkup(chatID, messageID, nil)
+
+	// Для Shorts просто скачиваем без выбора качества
+	if h.downloader.IsYouTubeShorts(state.VideoURL) {
+		h.editMessageText(chatID, messageID, "⏳ Загрузка Shorts...")
+		h.downloadYouTubeVideo(ctx, chatID, messageID, state.VideoURL, "best", true)
+		return
+	}
+
+	// Показываем прогресс и начинаем загрузку
+	h.editMessageText(chatID, messageID, "⏳ Начинаю загрузку...")
+	h.downloadYouTubeVideo(ctx, chatID, messageID, state.VideoURL, quality, false)
+}
+
+// showQualitySelection показывает inline keyboard с выбором качества
+func (h *Handler) showQualitySelection(chatID int64, videoURL string, messageID int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Получаем доступные качества
+	qualities, err := h.downloader.GetYouTubeQualities(ctx, videoURL)
+	if err != nil {
+		h.logger.Error("Failed to get qualities", slog.String("url", videoURL), slog.Any("error", err))
+		h.sendMessage(chatID, "❌ Не удалось получить информацию о видео.")
+		return
+	}
+
+	if len(qualities) == 0 {
+		h.sendMessage(chatID, "❌ Нет доступных форматов для этого видео.")
+		return
+	}
+
+	// Создаем inline keyboard
+	var rows [][]tgbotapi.InlineKeyboardButton
+	videoID := h.downloader.GetYouTubeVideoID(videoURL)
+
+	// Фильтруем и группируем качества
+	qualityOptions := map[string]bool{"1080": false, "720": false, "480": false, "audio": false}
+
+	for _, q := range qualities {
+		if q.IsAudioOnly {
+			qualityOptions["audio"] = true
+		} else if q.Height >= 1080 {
+			qualityOptions["1080"] = true
+		} else if q.Height >= 720 {
+			qualityOptions["720"] = true
+		} else if q.Height >= 480 {
+			qualityOptions["480"] = true
+		}
+	}
+
+	// Создаем кнопки
+	var buttons []tgbotapi.InlineKeyboardButton
+
+	if qualityOptions["1080"] {
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
+			"🎬 1080p",
+			fmt.Sprintf("yt_quality:%s:1080", videoID),
+		))
+	}
+	if qualityOptions["720"] {
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
+			"📺 720p",
+			fmt.Sprintf("yt_quality:%s:720", videoID),
+		))
+	}
+	if qualityOptions["480"] {
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
+			"📱 480p",
+			fmt.Sprintf("yt_quality:%s:480", videoID),
+		))
+	}
+	if qualityOptions["audio"] {
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
+			"🎵 Audio",
+			fmt.Sprintf("yt_quality:%s:audio", videoID),
+		))
+	}
+
+	// Разбиваем на ряды по 2 кнопки
+	for i := 0; i < len(buttons); i += 2 {
+		end := i + 2
+		if end > len(buttons) {
+			end = len(buttons)
+		}
+		rows = append(rows, buttons[i:end])
+	}
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
+
+	// Редактируем сообщение с inline keyboard
+	text := "🎥 Выберите качество видео:"
+	if _, err := h.editMessageTextAndMarkup(chatID, messageID, text, &keyboard); err != nil {
+		// Если редактирование не удалось, отправляем новое сообщение
+		msg := tgbotapi.NewMessage(chatID, text)
+		msg.ReplyMarkup = keyboard
+		sentMsg, err := h.bot.Send(msg)
+		if err != nil {
+			h.logger.Error("Failed to send quality selection", slog.Any("error", err))
+			return
+		}
+		messageID = sentMsg.MessageID
+	}
+
+	// Сохраняем состояние
+	h.stateManager.Set(chatID, messageID, videoURL)
+}
+
+// downloadYouTubeVideo скачивает YouTube видео с выбранным качеством
+func (h *Handler) downloadYouTubeVideo(
+	ctx context.Context,
+	chatID int64,
+	messageID int,
+	videoURL string,
+	quality string,
+	isShorts bool,
+) {
+	// Создаем callback для обновления прогресса
+	lastUpdate := time.Now()
+	progressCallback := func(percent int, downloaded int64, total int64, speed string, eta string) {
+		// Обновляем не чаще чем раз в 3 секунды
+		if time.Since(lastUpdate) < 3*time.Second {
+			return
+		}
+		lastUpdate = time.Now()
+
+		progressBar := h.formatProgressBar(percent)
+		text := fmt.Sprintf(
+			"🎥 Загрузка видео...\n%s\n%d%%",
+			progressBar,
+			percent,
+		)
+
+		if total > 0 {
+			text += fmt.Sprintf("\n📦 %.1f / %.1f MB", float64(downloaded)/(1024*1024), float64(total)/(1024*1024))
+		}
+		if speed != "" {
+			text += fmt.Sprintf("\n⚡ %s", speed)
+		}
+		if eta != "" {
+			text += fmt.Sprintf("\n⏱ Осталось: %s", eta)
+		}
+
+		h.editMessageText(chatID, messageID, text)
+	}
+
+	// Скачиваем видео
+	result, err := h.downloader.DownloadYouTubeWithQuality(ctx, videoURL, quality, progressCallback)
+	if err != nil {
+		h.editMessageText(chatID, messageID, fmt.Sprintf("❌ Ошибка при загрузке: %s", err.Error()))
+		return
+	}
+
+	defer h.downloader.Cleanup(result.FilePath)
+
+	// Отправляем файл
+	h.editMessageText(chatID, messageID, "📤 Отправка видео...")
+
+	var sendErr error
+	switch result.Type {
+	case downloader.MediaTypeVideo:
+		sendErr = h.sendVideo(chatID, result.FilePath)
+	case downloader.MediaTypeAudio:
+		sendErr = h.sendAudio(chatID, result.FilePath)
+	default:
+		sendErr = h.sendVideo(chatID, result.FilePath)
+	}
+
+	if sendErr != nil {
+		h.editMessageText(chatID, messageID, fmt.Sprintf("❌ Ошибка при отправке: %s", sendErr.Error()))
+		return
+	}
+
+	// Удаляем сообщение о загрузке
+	h.deleteMessage(chatID, messageID)
+}
+
+// formatProgressBar создает визуальный прогресс-бар
+func (h *Handler) formatProgressBar(percent int) string {
+	filled := percent / 10
+	empty := 10 - filled
+
+	bar := "["
+	for i := 0; i < filled; i++ {
+		bar += "█"
+	}
+	for i := 0; i < empty; i++ {
+		bar += "░"
+	}
+	bar += "]"
+
+	return bar
+}
+
+// editMessageText редактирует текст сообщения
+func (h *Handler) editMessageText(chatID int64, messageID int, text string) error {
+	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
+	edit.ParseMode = "HTML"
+	_, err := h.bot.Request(edit)
+	return err
+}
+
+// editMessageReplyMarkup редактирует inline keyboard сообщения
+func (h *Handler) editMessageReplyMarkup(chatID int64, messageID int, markup *tgbotapi.InlineKeyboardMarkup) error {
+	edit := tgbotapi.NewEditMessageReplyMarkup(chatID, messageID, *markup)
+	_, err := h.bot.Request(edit)
+	return err
+}
+
+// editMessageTextAndMarkup редактирует текст и keyboard
+func (h *Handler) editMessageTextAndMarkup(chatID int64, messageID int, text string, markup *tgbotapi.InlineKeyboardMarkup) (*tgbotapi.Message, error) {
+	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
+	edit.ParseMode = "HTML"
+	edit.ReplyMarkup = markup
+	resp, err := h.bot.Request(edit)
+	if err != nil {
+		return nil, err
+	}
+	// Конвертируем APIResponse в Message
+	// Note: go-telegram-bot-api не предоставляет прямой способ получить Message из Request
+	// поэтому возвращаем nil
+	return nil, nil
 }
 
 // isBotMentioned проверяет, упомянут ли бот в сообщении

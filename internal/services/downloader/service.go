@@ -214,3 +214,74 @@ func (s *Service) GetFileSize(filePath string) (int64, error) {
 	}
 	return info.Size(), nil
 }
+
+// ProgressCallback тип функции для обновления прогресса загрузки
+type ProgressCallback func(percent int, downloaded int64, total int64, speed string, eta string)
+
+// DownloadYouTubeWithQuality скачивает YouTube видео с выбранным качеством
+func (s *Service) DownloadYouTubeWithQuality(
+	ctx context.Context,
+	url string,
+	quality string,
+	progressCallback ProgressCallback,
+) (*MediaDownloadResult, error) {
+	s.logger.Info("Downloading YouTube video with quality",
+		slog.String("url", url),
+		slog.String("quality", quality),
+	)
+
+	filePath, err := s.ytDownloader.DownloadWithQuality(ctx, url, quality, progressCallback)
+	if err != nil {
+		s.logger.Error("Failed to download YouTube video",
+			slog.String("url", url),
+			slog.String("quality", quality),
+			slog.Any("error", err),
+		)
+		return nil, fmt.Errorf("failed to download video: %w", err)
+	}
+
+	// Проверяем существование файла
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("downloaded file does not exist: %s", filePath)
+	}
+
+	// Определяем тип медиа по расширению
+	mediaType := MediaTypeVideo
+	if strings.HasSuffix(strings.ToLower(filePath), ".mp3") ||
+		strings.HasSuffix(strings.ToLower(filePath), ".m4a") ||
+		strings.HasSuffix(strings.ToLower(filePath), ".opus") {
+		mediaType = MediaTypeAudio
+	}
+
+	s.logger.Info("YouTube video downloaded successfully",
+		slog.String("url", url),
+		slog.String("quality", quality),
+		slog.String("file", filePath),
+		slog.String("type", string(mediaType)),
+	)
+
+	return &MediaDownloadResult{
+		FilePath: filePath,
+		Type:     mediaType,
+	}, nil
+}
+
+// GetYouTubeQualities возвращает доступные качества для YouTube видео
+func (s *Service) GetYouTubeQualities(ctx context.Context, url string) ([]yt.VideoQuality, error) {
+	return s.ytDownloader.GetAvailableQualities(ctx, url)
+}
+
+// IsYouTubeURL проверяет, является ли URL ссылкой на YouTube
+func (s *Service) IsYouTubeURL(url string) bool {
+	return yt.IsValidURL(strings.ToLower(url))
+}
+
+// IsYouTubeShorts проверяет, является ли URL ссылкой на YouTube Shorts
+func (s *Service) IsYouTubeShorts(url string) bool {
+	return yt.IsShorts(url)
+}
+
+// GetYouTubeVideoID возвращает ID видео YouTube
+func (s *Service) GetYouTubeVideoID(url string) string {
+	return yt.GetVideoID(url)
+}
