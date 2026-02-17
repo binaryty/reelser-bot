@@ -8,10 +8,10 @@ import (
 
 // QualityState хранит информацию о состоянии выбора качества
 type QualityState struct {
-	VideoURL    string
-	MessageID   int
-	ChatID      int64
-	CreatedAt   time.Time
+	VideoURL  string
+	MessageID int
+	ChatID    int64
+	CreatedAt time.Time
 }
 
 // StateManager управляет состоянием выбора качества для YouTube видео
@@ -36,7 +36,7 @@ func NewStateManager() *StateManager {
 func (sm *StateManager) Set(chatID int64, messageID int, videoURL string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	
+
 	key := sm.makeKey(chatID, messageID)
 	sm.states[key] = &QualityState{
 		VideoURL:  videoURL,
@@ -50,18 +50,18 @@ func (sm *StateManager) Set(chatID int64, messageID int, videoURL string) {
 func (sm *StateManager) Get(chatID int64, messageID int) (*QualityState, bool) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	
+
 	key := sm.makeKey(chatID, messageID)
 	state, exists := sm.states[key]
 	if !exists {
 		return nil, false
 	}
-	
+
 	// Проверяем TTL
 	if time.Since(state.CreatedAt) > sm.ttl {
 		return nil, false
 	}
-	
+
 	return state, true
 }
 
@@ -69,7 +69,7 @@ func (sm *StateManager) Get(chatID int64, messageID int) (*QualityState, bool) {
 func (sm *StateManager) Delete(chatID int64, messageID int) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	
+
 	key := sm.makeKey(chatID, messageID)
 	delete(sm.states, key)
 }
@@ -83,7 +83,7 @@ func (sm *StateManager) makeKey(chatID int64, messageID int) string {
 func (sm *StateManager) cleanupLoop() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
-	
+
 	for range ticker.C {
 		sm.cleanup()
 	}
@@ -93,7 +93,7 @@ func (sm *StateManager) cleanupLoop() {
 func (sm *StateManager) cleanup() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	
+
 	now := time.Now()
 	for key, state := range sm.states {
 		if now.Sub(state.CreatedAt) > sm.ttl {

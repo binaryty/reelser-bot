@@ -108,7 +108,7 @@ func (h *Handler) HandleUpdate(ctx context.Context, update tgbotapi.Update) {
 	case update.CallbackQuery != nil:
 		h.handleCallbackQuery(ctx, update.CallbackQuery)
 	case update.InlineQuery != nil:
-		h.handleInlineQuery(ctx, update.InlineQuery)
+		h.handleInlineQuery(update.InlineQuery)
 	case update.ChosenInlineResult != nil:
 		h.handleChosenInlineResult(ctx, update.ChosenInlineResult)
 	default:
@@ -169,12 +169,12 @@ func (h *Handler) handleMessage(ctx context.Context, message *tgbotapi.Message) 
 
 	// Проверка авторизации
 	if h.auth != nil && h.auth.IsEnabled() && !h.auth.IsAuthorized(userID) {
-		h.handleAuthFlow(ctx, message)
+		h.handleAuthFlow(message)
 		return
 	}
 
 	if message.IsCommand() {
-		h.handleCommand(ctx, message)
+		h.handleCommand(message)
 		return
 	}
 
@@ -184,7 +184,7 @@ func (h *Handler) handleMessage(ctx context.Context, message *tgbotapi.Message) 
 }
 
 // handleCommand обрабатывает команды бота
-func (h *Handler) handleCommand(ctx context.Context, message *tgbotapi.Message) {
+func (h *Handler) handleCommand(message *tgbotapi.Message) {
 	if message == nil || message.Chat == nil {
 		h.logger.Warn("Invalid message in handleCommand")
 		return
@@ -261,7 +261,7 @@ func (h *Handler) handleTextMessage(ctx context.Context, message *tgbotapi.Messa
 		h.sendMessage(chatID, "❌ Внутренняя ошибка: сервис загрузки недоступен")
 		return
 	}
-	
+
 	if h.downloader.IsYouTubeURL(url) {
 		statusMsg := h.sendMessage(chatID, "⏳ Анализирую видео...")
 		if statusMsg == nil {
@@ -275,7 +275,7 @@ func (h *Handler) handleTextMessage(ctx context.Context, message *tgbotapi.Messa
 			h.editMessageText(chatID, messageID, "⏳ Загрузка Shorts...")
 			downloadCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
-			h.downloadYouTubeVideo(downloadCtx, chatID, messageID, url, "best", true)
+			h.downloadYouTubeVideo(downloadCtx, chatID, messageID, url, "best")
 			return
 		}
 
@@ -433,7 +433,7 @@ func (h *Handler) deleteOriginalMessage(req *downloadRequest) {
 }
 
 // handleAuthFlow обрабатывает сообщения от неавторизованных пользователей
-func (h *Handler) handleAuthFlow(ctx context.Context, message *tgbotapi.Message) {
+func (h *Handler) handleAuthFlow(message *tgbotapi.Message) {
 	if message == nil || message.From == nil || message.Chat == nil {
 		h.logger.Warn("Invalid message in handleAuthFlow")
 		return
@@ -462,7 +462,7 @@ func (h *Handler) handleAuthFlow(ctx context.Context, message *tgbotapi.Message)
 	h.sendMessage(chatID, "✅ Авторизация успешна! Теперь ты можешь отправлять ссылки на видео.")
 }
 
-func (h *Handler) handleInlineQuery(ctx context.Context, inlineQuery *tgbotapi.InlineQuery) {
+func (h *Handler) handleInlineQuery(inlineQuery *tgbotapi.InlineQuery) {
 	if inlineQuery == nil {
 		h.logger.Warn("Received nil inline query")
 		return
@@ -680,13 +680,13 @@ func (h *Handler) handleCallbackQuery(ctx context.Context, callbackQuery *tgbota
 	// Для Shorts просто скачиваем без выбора качества
 	if h.downloader.IsYouTubeShorts(state.VideoURL) {
 		h.editMessageText(chatID, messageID, "⏳ Загрузка Shorts...")
-		h.downloadYouTubeVideo(ctx, chatID, messageID, state.VideoURL, "best", true)
+		h.downloadYouTubeVideo(ctx, chatID, messageID, state.VideoURL, "best")
 		return
 	}
 
 	// Показываем прогресс и начинаем загрузку
 	h.editMessageText(chatID, messageID, "⏳ Начинаю загрузку...")
-	h.downloadYouTubeVideo(ctx, chatID, messageID, state.VideoURL, quality, false)
+	h.downloadYouTubeVideo(ctx, chatID, messageID, state.VideoURL, quality)
 }
 
 // showQualitySelection показывает inline keyboard с выбором качества
@@ -818,7 +818,6 @@ func (h *Handler) downloadYouTubeVideo(
 	messageID int,
 	videoURL string,
 	quality string,
-	isShorts bool,
 ) {
 	// Создаем callback для обновления прогресса
 	lastUpdate := time.Now()

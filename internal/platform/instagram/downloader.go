@@ -183,17 +183,17 @@ func (d *Downloader) detectMediaType(ctx context.Context, url string) (MediaType
 
 	var info struct {
 		Entries []struct {
-			Ext      string `json:"ext"`
-			Vcodec   string `json:"vcodec"`
-			Acodec   string `json:"acodec"`
-			Width    int    `json:"width"`
-			Height   int    `json:"height"`
+			Ext    string `json:"ext"`
+			Vcodec string `json:"vcodec"`
+			Acodec string `json:"acodec"`
+			Width  int    `json:"width"`
+			Height int    `json:"height"`
 		} `json:"entries"`
-		Ext      string `json:"ext"`
-		Vcodec   string `json:"vcodec"`
-		Acodec   string `json:"acodec"`
-		Width    int    `json:"width"`
-		Height   int    `json:"height"`
+		Ext    string `json:"ext"`
+		Vcodec string `json:"vcodec"`
+		Acodec string `json:"acodec"`
+		Width  int    `json:"width"`
+		Height int    `json:"height"`
 	}
 
 	if err := json.Unmarshal(output, &info); err != nil {
@@ -268,4 +268,3 @@ func IsReelURL(url string) bool {
 func IsValidURL(url string) bool {
 	return strings.Contains(url, "instagram.com")
 }
-

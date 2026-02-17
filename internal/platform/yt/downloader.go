@@ -20,14 +20,14 @@ import (
 
 // VideoQuality представляет доступное качество видео
 type VideoQuality struct {
-	FormatID   string
-	Resolution string // 1080p, 720p, etc.
-	Height     int
-	Width      int
-	Filesize   int64
-	Ext        string
-	Vcodec     string
-	Acodec     string
+	FormatID    string
+	Resolution  string // 1080p, 720p, etc.
+	Height      int
+	Width       int
+	Filesize    int64
+	Ext         string
+	Vcodec      string
+	Acodec      string
 	IsAudioOnly bool
 }
 
@@ -149,15 +149,15 @@ func (d *Downloader) GetAvailableQualities(ctx context.Context, videoURL string)
 		Title    string `json:"title"`
 		Duration int    `json:"duration"`
 		Formats  []struct {
-			FormatID   string `json:"format_id"`
-			Ext        string `json:"ext"`
-			Resolution string `json:"resolution"`
-			Height     int    `json:"height"`
-			Width      int    `json:"width"`
-			Filesize   int64  `json:"filesize"`
+			FormatID       string  `json:"format_id"`
+			Ext            string  `json:"ext"`
+			Resolution     string  `json:"resolution"`
+			Height         int     `json:"height"`
+			Width          int     `json:"width"`
+			Filesize       int64   `json:"filesize"`
 			FilesizeApprox float64 `json:"filesize_approx"`
-			Vcodec     string `json:"vcodec"`
-			Acodec     string `json:"acodec"`
+			Vcodec         string  `json:"vcodec"`
+			Acodec         string  `json:"acodec"`
 		} `json:"formats"`
 	}
 
@@ -316,7 +316,7 @@ func (d *Downloader) parseProgress(reader io.Reader, callback ProgressCallback) 
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
 		line := scanner.Text()
-		
+
 		// Ищем строки прогресса: [download] 45.2% of ~50.00MiB at 2.5MiB/s ETA 00:15
 		if strings.Contains(line, "[download]") && strings.Contains(line, "%") {
 			percent, downloaded, total, speed, eta := d.parseProgressLine(line)
@@ -330,7 +330,7 @@ func (d *Downloader) parseProgress(reader io.Reader, callback ProgressCallback) 
 // parseProgressLine парсит строку прогресса
 func (d *Downloader) parseProgressLine(line string) (int, int64, int64, string, string) {
 	// Пример: [download] 45.2% of ~50.00MiB at 2.5MiB/s ETA 00:15
-	
+
 	// Извлекаем процент
 	percentRegex := regexp.MustCompile(`(\d+\.?\d*)%`)
 	percentMatch := percentRegex.FindStringSubmatch(line)
@@ -538,17 +538,17 @@ func (d *Downloader) downloadFromURL(ctx context.Context, downloadURL, originalU
 
 // progressReader оборачивает reader для отслеживания прогресса
 type progressReader struct {
-	reader     io.Reader
-	total      int64
-	downloaded int64
-	callback   ProgressCallback
+	reader      io.Reader
+	total       int64
+	downloaded  int64
+	callback    ProgressCallback
 	lastPercent int
 }
 
 func (pr *progressReader) Read(p []byte) (int, error) {
 	n, err := pr.reader.Read(p)
 	pr.downloaded += int64(n)
-	
+
 	if pr.total > 0 {
 		percent := int(float64(pr.downloaded) * 100 / float64(pr.total))
 		// Обновляем только при изменении процента (минимум на 5%)
@@ -557,7 +557,7 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 			pr.lastPercent = percent
 		}
 	}
-	
+
 	return n, err
 }
 
