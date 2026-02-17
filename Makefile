@@ -1,4 +1,4 @@
-.PHONY: run build lint clean test deps help install-tools docker-build docker-run docker-stop compose-up compose-down compose-logs
+.PHONY: run build lint clean test deps help install-tools docker-build docker-run docker-stop compose-up compose-down compose-logs compose-rebuild restart rebuild logs dev update
 
 # Переменные
 BINARY_NAME=reelser-bot
@@ -90,4 +90,41 @@ compose-down: ## Остановить docker-compose
 compose-logs: ## Показать логи docker-compose
 	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) logs -f
 
+compose-rebuild: ## Полная пересборка и перезапуск (очистка кэша)
+	@echo "$(YELLOW)Stopping services...$(NC)"
+	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) down
+	@echo "$(GREEN)Cleaning build cache...$(NC)"
+	docker system prune -f
+	@echo "$(GREEN)Building and starting services...$(NC)"
+	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) up -d --build --no-cache
+	@echo "$(GREEN)Done! Watching logs...$(NC)"
+	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) logs -f
+
+restart: ## Быстрый рестарт без очистки кэша
+	@echo "$(YELLOW)Restarting services...$(NC)"
+	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) restart
+	@echo "$(GREEN)Done!$(NC)"
+
+rebuild: ## Пересборка с очисткой кэша и запуск
+	@echo "$(YELLOW)Stopping and removing containers...$(NC)"
+	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) down --rmi local
+	@echo "$(GREEN)Rebuilding from scratch...$(NC)"
+	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) build --no-cache
+	@echo "$(GREEN)Starting services...$(NC)"
+	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) up -d
+	@echo "$(GREEN)Done!$(NC)"
+
+logs: ## Показать последние логи
+	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) logs --tail=50
+
+dev: ## Режим разработки (пересборка + логи)
+	@echo "$(GREEN)Starting development mode...$(NC)"
+	$(MAKE) rebuild
+	@echo "$(GREEN)Watching logs...$(NC)"
+	$(MAKE) compose-logs
+
+update: ## Обновление yt-dlp и пересборка
+	@echo "$(GREEN)Updating yt-dlp...$(NC)"
+	$(DOCKER_COMPOSE) -f $(COMPOSE_FILE) exec reelser-bot pip3 install -U yt-dlp
+	@echo "$(GREEN)yt-dlp updated!$(NC)"
 
