@@ -101,20 +101,25 @@ func (d *Downloader) DownloadWithQuality(
 }
 
 // qualityToFormat преобразует запрошенное качество в форматную строку yt-dlp
+// Используем уже объединенные форматы (содержащие и видео и аудио) чтобы избежать проблем с мержем
 func (d *Downloader) qualityToFormat(quality string) string {
 	switch quality {
 	case "1080":
-		return "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]"
+		// Сначала пробуем найти уже объединенный формат 1080p, иначе best <=1080
+		return "best[height=1080][ext=mp4]/best[height<=1080][ext=mp4]/best[height<=1080]"
 	case "720":
-		return "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]"
+		// Сначала пробуем найти уже объединенный формат 720p
+		return "best[height=720][ext=mp4]/best[height<=720][ext=mp4]/best[height<=720]"
 	case "480":
-		return "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]"
+		// Сначала пробуем найти уже объединенный формат 480p
+		return "best[height=480][ext=mp4]/best[height<=480][ext=mp4]/best[height<=480]"
 	case "audio":
 		return "bestaudio[ext=m4a]/bestaudio/best"
 	case "best":
-		return "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+		// Для best пробуем сначала объединенные форматы
+		return "best[ext=mp4]/best"
 	default:
-		return "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+		return "best[ext=mp4]/best"
 	}
 }
 

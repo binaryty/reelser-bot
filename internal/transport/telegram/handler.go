@@ -887,10 +887,10 @@ func (h *Handler) editMessageText(chatID int64, messageID int, text string) erro
 // editMessageReplyMarkup редактирует inline keyboard сообщения
 func (h *Handler) editMessageReplyMarkup(chatID int64, messageID int, markup *tgbotapi.InlineKeyboardMarkup) error {
 	if markup == nil {
-		// Если markup nil, создаем пустой keyboard для удаления
-		emptyKeyboard := tgbotapi.NewInlineKeyboardMarkup()
-		edit := tgbotapi.NewEditMessageReplyMarkup(chatID, messageID, emptyKeyboard)
-		_, err := h.bot.Request(edit)
+		// Если markup nil, редактируем текст сообщения без keyboard (это удалит keyboard)
+		// Сначала получаем текущий текст сообщения
+		msg := tgbotapi.NewEditMessageText(chatID, messageID, "⏳ Загрузка...")
+		_, err := h.bot.Request(msg)
 		return err
 	}
 	edit := tgbotapi.NewEditMessageReplyMarkup(chatID, messageID, *markup)
