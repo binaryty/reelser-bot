@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"runtime"
 	"strconv"
@@ -47,7 +48,7 @@ type AuthConfig struct {
 func Load() (*Config, error) {
 	// Загружаем .env файл, если он существует (игнорируем ошибку, если файла нет)
 	if err := godotenv.Load(); err != nil {
-		return nil, err
+		log.Println(err)
 	}
 
 	cfg := &Config{
