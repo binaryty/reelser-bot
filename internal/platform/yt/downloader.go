@@ -178,8 +178,8 @@ func (d *Downloader) GetAvailableQualities(ctx context.Context, videoURL string)
 			continue
 		}
 
-		// Берем только mp4
-		if f.Ext != "mp4" && f.Ext != "" {
+		// Берем mp4 и webm (4K/2K часто только в webm)
+		if f.Ext != "mp4" && f.Ext != "webm" && f.Ext != "" {
 			continue
 		}
 
