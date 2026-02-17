@@ -215,15 +215,12 @@ func (s *Service) GetFileSize(filePath string) (int64, error) {
 	return info.Size(), nil
 }
 
-// ProgressCallback тип функции для обновления прогресса загрузки
-type ProgressCallback func(percent int, downloaded int64, total int64, speed string, eta string)
-
 // DownloadYouTubeWithQuality скачивает YouTube видео с выбранным качеством
 func (s *Service) DownloadYouTubeWithQuality(
 	ctx context.Context,
 	url string,
 	quality string,
-	progressCallback ProgressCallback,
+	progressCallback yt.ProgressCallback,
 ) (*MediaDownloadResult, error) {
 	s.logger.Info("Downloading YouTube video with quality",
 		slog.String("url", url),
