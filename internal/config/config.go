@@ -46,7 +46,9 @@ type AuthConfig struct {
 // Load загружает конфигурацию из переменных окружения
 func Load() (*Config, error) {
 	// Загружаем .env файл, если он существует (игнорируем ошибку, если файла нет)
-	_ = godotenv.Load()
+	if err := godotenv.Load(); err != nil {
+		return nil, err
+	}
 
 	cfg := &Config{
 		Telegram: TelegramConfig{

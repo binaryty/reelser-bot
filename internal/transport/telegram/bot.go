@@ -112,7 +112,7 @@ func (b *Bot) Start() error {
 	for {
 		select {
 		case <-b.ctx.Done():
-			b.logger.Info("Bot context cancelled, stopping...")
+			b.logger.Info("Bot context canceled, stopping...")
 			return nil
 
 		case update := <-updates:

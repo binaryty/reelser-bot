@@ -1,10 +1,6 @@
 run:
   timeout: 5m
   tests: true
-  skip-dirs:
-    - bin
-    - tmp
-    - vendor
 
 linters-settings:
   errcheck:
@@ -66,6 +62,10 @@ linters:
     - misspell
 
 issues:
+  exclude-dirs:
+    - bin
+    - tmp
+    - vendor
   exclude-rules:
     - path: _test\.go
       linters:

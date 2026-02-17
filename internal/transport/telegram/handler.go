@@ -272,7 +272,9 @@ func (h *Handler) handleTextMessage(ctx context.Context, message *tgbotapi.Messa
 
 		// Для Shorts сразу начинаем загрузку
 		if h.downloader.IsYouTubeShorts(url) {
-			h.editMessageText(chatID, messageID, "⏳ Загрузка Shorts...")
+			if err := h.editMessageText(chatID, messageID, "⏳ Загрузка Shorts..."); err != nil {
+				h.logger.Error("Failed to edit message", slog.Any("error", err))
+			}
 			downloadCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
 			h.downloadYouTubeVideo(downloadCtx, chatID, messageID, url, "best")
@@ -537,7 +539,7 @@ func (h *Handler) buildInlineResults(queryID, rawQuery string) []interface{} {
 	if url := h.extractURL(rawQuery); url != "" && h.containsURL(url) {
 		messageText := fmt.Sprintf("⏳ Запрос на скачивание:\n%s\n\nБот отправит видео в личные сообщения.", url)
 		result := tgbotapi.NewInlineQueryResultArticle(queryID+"-download", "Скачать видео", messageText)
-		result.Description = "Поддерживаются YouTube, TikTok и Instagram"
+		result.Description = PlatformsSupported
 		results = append(results, result)
 	} else {
 		helpResult := tgbotapi.NewInlineQueryResultArticle(
@@ -545,7 +547,7 @@ func (h *Handler) buildInlineResults(queryID, rawQuery string) []interface{} {
 			"Укажи ссылку на видео",
 			"Пример: https://www.youtube.com/watch?v=dQw4w9WgXcQ",
 		)
-		helpResult.Description = "Поддерживаются YouTube, TikTok и Instagram"
+		helpResult.Description = PlatformsSupported
 		results = append(results, helpResult)
 	}
 
@@ -666,7 +668,9 @@ func (h *Handler) handleCallbackQuery(ctx context.Context, callbackQuery *tgbota
 	state, exists := h.stateManager.Get(chatID, messageID)
 	if !exists {
 		h.logger.Warn("State not found for callback", slog.Int64("chat_id", chatID), slog.Int("message_id", messageID))
-		h.editMessageText(chatID, messageID, "❌ Время выбора качества истекло. Отправь ссылку заново.")
+		if err := h.editMessageText(chatID, messageID, "❌ Время выбора качества истекло. Отправь ссылку заново."); err != nil {
+			h.logger.Error("Failed to edit message", slog.Any("error", err))
+		}
 		return
 	}
 
@@ -679,13 +683,17 @@ func (h *Handler) handleCallbackQuery(ctx context.Context, callbackQuery *tgbota
 
 	// Для Shorts просто скачиваем без выбора качества
 	if h.downloader.IsYouTubeShorts(state.VideoURL) {
-		h.editMessageText(chatID, messageID, "⏳ Загрузка Shorts...")
+		if err := h.editMessageText(chatID, messageID, "⏳ Загрузка Shorts..."); err != nil {
+			h.logger.Error("Failed to edit message", slog.Any("error", err))
+		}
 		h.downloadYouTubeVideo(ctx, chatID, messageID, state.VideoURL, "best")
 		return
 	}
 
 	// Показываем прогресс и начинаем загрузку
-	h.editMessageText(chatID, messageID, "⏳ Начинаю загрузку...")
+	if err := h.editMessageText(chatID, messageID, "⏳ Начинаю загрузку..."); err != nil {
+		h.logger.Error("Failed to edit message", slog.Any("error", err))
+	}
 	h.downloadYouTubeVideo(ctx, chatID, messageID, state.VideoURL, quality)
 }
 
@@ -845,20 +853,26 @@ func (h *Handler) downloadYouTubeVideo(
 			text += fmt.Sprintf("\n⏱ Осталось: %s", eta)
 		}
 
-		h.editMessageText(chatID, messageID, text)
+		if err := h.editMessageText(chatID, messageID, text); err != nil {
+			h.logger.Warn("Failed to edit progress message", slog.Any("error", err))
+		}
 	}
 
 	// Скачиваем видео
 	result, err := h.downloader.DownloadYouTubeWithQuality(ctx, videoURL, quality, progressCallback)
 	if err != nil {
-		h.editMessageText(chatID, messageID, fmt.Sprintf("❌ Ошибка при загрузке: %s", err.Error()))
+		if e := h.editMessageText(chatID, messageID, fmt.Sprintf("❌ Ошибка при загрузке: %s", err.Error())); e != nil {
+			h.logger.Warn("Failed to edit error message", slog.Any("error", e))
+		}
 		return
 	}
 
 	defer h.downloader.Cleanup(result.FilePath)
 
 	// Отправляем файл
-	h.editMessageText(chatID, messageID, "📤 Отправка видео...")
+	if e := h.editMessageText(chatID, messageID, "📤 Отправка видео..."); e != nil {
+		h.logger.Warn("Failed to edit message", slog.Any("error", e))
+	}
 
 	var sendErr error
 	switch result.Type {
@@ -899,7 +913,7 @@ func (h *Handler) formatProgressBar(percent int) string {
 // editMessageText редактирует текст сообщения
 func (h *Handler) editMessageText(chatID int64, messageID int, text string) error {
 	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
-	edit.ParseMode = "HTML"
+	edit.ParseMode = ParseModeHTML
 	_, err := h.bot.Request(edit)
 	return err
 }
@@ -921,7 +935,7 @@ func (h *Handler) editMessageReplyMarkup(chatID int64, messageID int, markup *tg
 // editMessageTextAndMarkup редактирует текст и keyboard
 func (h *Handler) editMessageTextAndMarkup(chatID int64, messageID int, text string, markup *tgbotapi.InlineKeyboardMarkup) (*tgbotapi.Message, error) {
 	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
-	edit.ParseMode = "HTML"
+	edit.ParseMode = ParseModeHTML
 	edit.ReplyMarkup = markup
 	_, err := h.bot.Request(edit)
 	if err != nil {
@@ -1010,7 +1024,7 @@ func (h *Handler) extractURL(text string) string {
 // sendMessage отправляет текстовое сообщение
 func (h *Handler) sendMessage(chatID int64, text string) *tgbotapi.Message {
 	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ParseMode = "HTML"
+	msg.ParseMode = ParseModeHTML
 
 	sentMsg, err := h.bot.Send(msg)
 	if err != nil {

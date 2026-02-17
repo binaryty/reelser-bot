@@ -39,7 +39,7 @@ func (d *Downloader) Download(ctx context.Context, url string) (string, error) {
 	// Используем TikWM API для получения прямой ссылки на видео
 	apiURL := fmt.Sprintf("https://tikwm.com/api?url=%s", url)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, http.NoBody)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -90,7 +90,7 @@ func (d *Downloader) Download(ctx context.Context, url string) (string, error) {
 	playURL := apiResponse.Data.Play
 
 	// Скачиваем видео
-	videoReq, err := http.NewRequestWithContext(ctx, "GET", playURL, nil)
+	videoReq, err := http.NewRequestWithContext(ctx, "GET", playURL, http.NoBody)
 	if err != nil {
 		return "", fmt.Errorf("failed to create video request: %w", err)
 	}

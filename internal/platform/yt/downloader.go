@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/reelser-bot/internal/common"
 	"io"
 	"log/slog"
 	"net/http"
@@ -123,9 +124,9 @@ func (d *Downloader) qualityToFormat(quality string) string {
 		return "bestaudio[ext=m4a]/bestaudio/best"
 	case "best":
 		// Для best пробуем сначала объединенные форматы
-		return "best[ext=mp4]/best"
+		return common.BestFormatExtMp4
 	default:
-		return "best[ext=mp4]/best"
+		return common.BestFormatExtMp4
 	}
 }
 
@@ -337,14 +338,21 @@ func (d *Downloader) parseProgressLine(line string) (int, int64, int64, string, 
 	if len(percentMatch) < 2 {
 		return -1, 0, 0, "", ""
 	}
-	percent, _ := strconv.ParseFloat(percentMatch[1], 64)
+	percent, err := strconv.ParseFloat(percentMatch[1], 64)
+	if err != nil {
+		return -1, 0, 0, "", ""
+	}
 
 	// Извлекаем размер
 	sizeRegex := regexp.MustCompile(`of\s+~?(\d+\.?\d*)([KMGT]i?B)`)
 	sizeMatch := sizeRegex.FindStringSubmatch(line)
 	total := int64(0)
 	if len(sizeMatch) >= 3 {
-		sizeVal, _ := strconv.ParseFloat(sizeMatch[1], 64)
+		sizeVal, err := strconv.ParseFloat(sizeMatch[1], 64)
+		if err != nil {
+			return -1, 0, 0, "", ""
+		}
+
 		unit := sizeMatch[2]
 		switch {
 		case strings.HasPrefix(unit, "K"):
@@ -430,7 +438,7 @@ func (d *Downloader) downloadViaSaveFrom(ctx context.Context, videoURL string, p
 func (d *Downloader) getSaveFromURL(ctx context.Context, videoURL string) (string, error) {
 	apiURL := fmt.Sprintf("https://savefrom.net/save-from.php?url=%s", url.QueryEscape(videoURL))
 
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, http.NoBody)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -485,7 +493,7 @@ func (d *Downloader) getSaveFromURL(ctx context.Context, videoURL string) (strin
 
 // downloadFromURL скачивает файл по прямой ссылке
 func (d *Downloader) downloadFromURL(ctx context.Context, downloadURL, originalURL string, progressCallback ProgressCallback) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, http.NoBody)
 	if err != nil {
 		return "", fmt.Errorf("failed to create download request: %w", err)
 	}

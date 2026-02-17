@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/reelser-bot/internal/common"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -98,7 +99,7 @@ func (d *Downloader) DownloadWithType(ctx context.Context, url string) (*Downloa
 		args = append(args, "-f", d.getFormatString())
 	case MediaTypePhoto:
 		// Для фото скачиваем лучшее качество
-		args = append(args, "-f", "best")
+		args = append(args, "-f", common.BestFormatExtMp4)
 	case MediaTypeAudio:
 		// Для аудио скачиваем только аудио
 		args = append(args, "-f", "bestaudio/best", "-x", "--audio-format", "mp3")
@@ -219,17 +220,17 @@ func (d *Downloader) detectMediaType(ctx context.Context, url string) (MediaType
 	}
 
 	// Если есть видеокодек - это видео
-	if entry.Vcodec != "none" && entry.Vcodec != "" {
+	if entry.Vcodec != common.NoneConst && entry.Vcodec != "" {
 		return MediaTypeVideo, nil
 	}
 
 	// Если есть только аудиокодек - это аудио
-	if entry.Acodec != "none" && entry.Acodec != "" && (entry.Vcodec == "none" || entry.Vcodec == "") {
+	if entry.Acodec != common.NoneConst && entry.Acodec != "" && (entry.Vcodec == common.NoneConst || entry.Vcodec == "") {
 		return MediaTypeAudio, nil
 	}
 
 	// Если есть размеры (ширина/высота) но нет видеокодека - это фото
-	if entry.Width > 0 && entry.Height > 0 && (entry.Vcodec == "none" || entry.Vcodec == "") {
+	if entry.Width > 0 && entry.Height > 0 && (entry.Vcodec == common.NoneConst || entry.Vcodec == "") {
 		return MediaTypePhoto, nil
 	}
 
@@ -250,11 +251,11 @@ func (d *Downloader) detectMediaType(ctx context.Context, url string) (MediaType
 func (d *Downloader) getFormatString() string {
 	switch strings.ToLower(d.videoQuality) {
 	case "best":
-		return "best[ext=mp4]/best"
+		return common.BestFormatExtMp4
 	case "worst":
 		return "worst[ext=mp4]/worst"
 	default:
-		return "best[ext=mp4]/best"
+		return common.BestFormatExtMp4
 	}
 }
 
