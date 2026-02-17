@@ -22,6 +22,9 @@ linters-settings:
       - octalLiteral
       - whyNoLint
       - wrapperFunc
+  govet:
+    enable:
+      - shadow
   gocyclo:
     min-complexity: 15
   maligned:
@@ -58,7 +61,6 @@ linters:
     - gocognit
     - lll
     - misspell
-    - shadow
 
 issues:
   exclude-dirs:
