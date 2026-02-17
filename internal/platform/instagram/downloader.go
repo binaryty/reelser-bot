@@ -115,6 +115,13 @@ func (d *Downloader) DownloadWithType(ctx context.Context, url string) (*Downloa
 			slog.Any("error", err),
 			slog.String("output", string(output)),
 		)
+		// Проверяем на ошибку авторизации Instagram
+		outputStr := string(output)
+		if strings.Contains(outputStr, "empty media response") ||
+			strings.Contains(outputStr, "being logged-in") ||
+			strings.Contains(outputStr, "cookies") {
+			return nil, fmt.Errorf("❌ Этот пост недоступен без авторизации в Instagram.\n\nПопробуйте:\n1. Открыть ссылку в браузере где вы залогинены в Instagram\n2. Или используйте другой пост\n3. Некоторые посты могут быть приватными или удалены")
+		}
 		return nil, fmt.Errorf("failed to download media: %w", err)
 	}
 
