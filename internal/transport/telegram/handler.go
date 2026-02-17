@@ -655,15 +655,22 @@ func (h *Handler) handleCallbackQuery(ctx context.Context, callbackQuery *tgbota
 	_ = parts[1] // videoID не используется напрямую, хранится в state
 	quality := parts[2]
 
+	h.logger.Info("Parsed callback data", slog.String("quality", quality))
+
 	// Получаем сохраненное состояние
 	state, exists := h.stateManager.Get(chatID, messageID)
 	if !exists {
+		h.logger.Warn("State not found for callback", slog.Int64("chat_id", chatID), slog.Int("message_id", messageID))
 		h.editMessageText(chatID, messageID, "❌ Время выбора качества истекло. Отправь ссылку заново.")
 		return
 	}
 
+	h.logger.Info("Found state", slog.String("video_url", state.VideoURL))
+
 	// Удаляем inline keyboard
-	h.editMessageReplyMarkup(chatID, messageID, nil)
+	if err := h.editMessageReplyMarkup(chatID, messageID, nil); err != nil {
+		h.logger.Error("Failed to remove keyboard", slog.Any("error", err))
+	}
 
 	// Для Shorts просто скачиваем без выбора качества
 	if h.downloader.IsYouTubeShorts(state.VideoURL) {
@@ -879,6 +886,12 @@ func (h *Handler) editMessageText(chatID int64, messageID int, text string) erro
 
 // editMessageReplyMarkup редактирует inline keyboard сообщения
 func (h *Handler) editMessageReplyMarkup(chatID int64, messageID int, markup *tgbotapi.InlineKeyboardMarkup) error {
+	if markup == nil {
+		// Если markup nil, просто удаляем keyboard
+		removeKeyboard := tgbotapi.NewRemoveInlineKeyboard(chatID, messageID)
+		_, err := h.bot.Request(removeKeyboard)
+		return err
+	}
 	edit := tgbotapi.NewEditMessageReplyMarkup(chatID, messageID, *markup)
 	_, err := h.bot.Request(edit)
 	return err
