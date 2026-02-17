@@ -724,11 +724,15 @@ func (h *Handler) showQualitySelection(chatID int64, videoURL string, messageID 
 	videoID := h.downloader.GetYouTubeVideoID(videoURL)
 
 	// Фильтруем и группируем качества
-	qualityOptions := map[string]bool{"1080": false, "720": false, "480": false, "audio": false}
+	qualityOptions := map[string]bool{"2160": false, "1440": false, "1080": false, "720": false, "480": false, "audio": false}
 
 	for _, q := range qualities {
 		if q.IsAudioOnly {
 			qualityOptions["audio"] = true
+		} else if q.Height >= 2160 {
+			qualityOptions["2160"] = true
+		} else if q.Height >= 1440 {
+			qualityOptions["1440"] = true
 		} else if q.Height >= 1080 {
 			qualityOptions["1080"] = true
 		} else if q.Height >= 720 {
@@ -738,18 +742,30 @@ func (h *Handler) showQualitySelection(chatID int64, videoURL string, messageID 
 		}
 	}
 
-	// Создаем кнопки
+	// Создаем кнопки (от высокого к низкому качеству)
 	var buttons []tgbotapi.InlineKeyboardButton
 
+	if qualityOptions["2160"] {
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
+			"🎬 4K",
+			fmt.Sprintf("yt_quality:%s:2160", videoID),
+		))
+	}
+	if qualityOptions["1440"] {
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
+			"🎬 2K",
+			fmt.Sprintf("yt_quality:%s:1440", videoID),
+		))
+	}
 	if qualityOptions["1080"] {
 		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
-			"🎬 1080p",
+			"📺 1080p",
 			fmt.Sprintf("yt_quality:%s:1080", videoID),
 		))
 	}
 	if qualityOptions["720"] {
 		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
-			"📺 720p",
+			"📱 720p",
 			fmt.Sprintf("yt_quality:%s:720", videoID),
 		))
 	}

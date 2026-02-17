@@ -104,6 +104,12 @@ func (d *Downloader) DownloadWithQuality(
 // Используем уже объединенные форматы (содержащие и видео и аудио) чтобы избежать проблем с мержем
 func (d *Downloader) qualityToFormat(quality string) string {
 	switch quality {
+	case "2160":
+		// 4K: сначала пробуем найти уже объединенный формат 2160p
+		return "best[height=2160][ext=mp4]/best[height<=2160][ext=mp4]/best[height<=2160]"
+	case "1440":
+		// 2K: сначала пробуем найти уже объединенный формат 1440p
+		return "best[height=1440][ext=mp4]/best[height<=1440][ext=mp4]/best[height<=1440]"
 	case "1080":
 		// Сначала пробуем найти уже объединенный формат 1080p, иначе best <=1080
 		return "best[height=1080][ext=mp4]/best[height<=1080][ext=mp4]/best[height<=1080]"
@@ -231,7 +237,11 @@ func (d *Downloader) GetAvailableQualities(ctx context.Context, videoURL string)
 
 // normalizeHeight округляет высоту до стандартных значений
 func (d *Downloader) normalizeHeight(height int) int {
-	if height >= 1080 {
+	if height >= 2160 {
+		return 2160
+	} else if height >= 1440 {
+		return 1440
+	} else if height >= 1080 {
 		return 1080
 	} else if height >= 720 {
 		return 720
