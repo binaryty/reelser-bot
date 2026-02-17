@@ -346,7 +346,12 @@ func (h *Handler) processDownload(req *downloadRequest) {
 			slog.String("url", req.url),
 			slog.Any("error", err),
 		)
-		h.sendMessage(req.chatID, fmt.Sprintf("❌ Ошибка при загрузке медиа: %s", err.Error()))
+		errMsg := fmt.Sprintf("❌ Ошибка при загрузке медиа:\n%s", err.Error())
+		h.logger.Info("Sending error message to user", slog.String("message", errMsg))
+		msg := h.sendPlainMessage(req.chatID, errMsg)
+		if msg == nil {
+			h.logger.Error("Failed to send error message to user")
+		}
 		return
 	}
 	defer func() {
@@ -995,6 +1000,22 @@ func (h *Handler) sendMessage(chatID int64, text string) *tgbotapi.Message {
 	sentMsg, err := h.bot.Send(msg)
 	if err != nil {
 		h.logger.Error("Failed to send message",
+			slog.Int64("chat_id", chatID),
+			slog.Any("error", err),
+		)
+		return nil
+	}
+	return &sentMsg
+}
+
+// sendPlainMessage отправляет текстовое сообщение без HTML форматирования
+func (h *Handler) sendPlainMessage(chatID int64, text string) *tgbotapi.Message {
+	msg := tgbotapi.NewMessage(chatID, text)
+	// Не используем HTML чтобы избежать проблем с спецсимволами
+
+	sentMsg, err := h.bot.Send(msg)
+	if err != nil {
+		h.logger.Error("Failed to send plain message",
 			slog.Int64("chat_id", chatID),
 			slog.Any("error", err),
 		)
