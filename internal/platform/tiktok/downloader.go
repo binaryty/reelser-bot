@@ -74,7 +74,7 @@ func (d *Downloader) Download(ctx context.Context, url string) (string, error) {
 	}
 
 	// Парсим JSON ответ
-	if err := json.Unmarshal(body, &apiResponse); err != nil {
+	if err = json.Unmarshal(body, &apiResponse); err != nil {
 		// Если не удалось распарсить JSON, пробуем извлечь URL вручную
 		playURL := extractPlayURL(string(body))
 		if playURL == "" {

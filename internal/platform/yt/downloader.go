@@ -20,6 +20,12 @@ import (
 	"github.com/reelser-bot/internal/common"
 )
 
+// Выносим регулярки, чтобы не компилировать их каждый раз
+var (
+	progressRegex = regexp.MustCompile(`(?P<percent>\d+\.?\d*)%\s+of\s+~?(?P<size>\d+\.?\d*)
+	(?P<unit>[KMGT]i?B)\s+at\s+(?P<speed>\d+\.?\d*\s*[KMGT]i?B/s)\s+ETA\s+(?P<eta>\d+:\d+)`)
+)
+
 // VideoQuality представляет доступное качество видео
 type VideoQuality struct {
 	FormatID    string
@@ -331,60 +337,52 @@ func (d *Downloader) parseProgress(reader io.Reader, callback ProgressCallback) 
 }
 
 // parseProgressLine парсит строку прогресса
-func (d *Downloader) parseProgressLine(line string) (int, int64, int64, string, string) {
+func (d *Downloader) parseProgressLine(line string) (
+	percent int,
+	downloaded int64,
+	total int64,
+	speed string,
+	eta string,
+) {
 	// Пример: [download] 45.2% of ~50.00MiB at 2.5MiB/s ETA 00:15
-
-	// Извлекаем процент
-	percentRegex := regexp.MustCompile(`(\d+\.?\d*)%`)
-	percentMatch := percentRegex.FindStringSubmatch(line)
-	if len(percentMatch) < 2 {
+	match := progressRegex.FindStringSubmatch(line)
+	if match == nil {
 		return -1, 0, 0, "", ""
 	}
-	percent, err := strconv.ParseFloat(percentMatch[1], 64)
+
+	// Хелпер для получения значения по имени группы
+	get := func(name string) string {
+		return match[progressRegex.SubexpIndex(name)]
+	}
+
+	// Парсим процент
+	pVal, err := strconv.ParseFloat(get("percent"), 64)
 	if err != nil {
 		return -1, 0, 0, "", ""
 	}
+	percent = int(pVal)
 
-	// Извлекаем размер
-	sizeRegex := regexp.MustCompile(`of\s+~?(\d+\.?\d*)([KMGT]i?B)`)
-	sizeMatch := sizeRegex.FindStringSubmatch(line)
-	total := int64(0)
-	if len(sizeMatch) >= 3 {
-		sizeVal, err := strconv.ParseFloat(sizeMatch[1], 64)
-		if err != nil {
-			return -1, 0, 0, "", ""
-		}
+	// Парсим общий размер
+	sizeVal, err := strconv.ParseFloat(get("size"), 64)
+	if err != nil {
+		return -1, 0, 0, "", ""
+	}
+	unit := get("unit")
 
-		unit := sizeMatch[2]
-		switch {
-		case strings.HasPrefix(unit, "K"):
-			total = int64(sizeVal * 1024)
-		case strings.HasPrefix(unit, "M"):
-			total = int64(sizeVal * 1024 * 1024)
-		case strings.HasPrefix(unit, "G"):
-			total = int64(sizeVal * 1024 * 1024 * 1024)
-		}
+	switch {
+	case strings.HasPrefix(unit, "K"):
+		total = int64(sizeVal * 1024)
+	case strings.HasPrefix(unit, "M"):
+		total = int64(sizeVal * 1024 * 1024)
+	case strings.HasPrefix(unit, "G"):
+		total = int64(sizeVal * 1024 * 1024 * 1024)
 	}
 
-	downloaded := int64(float64(total) * percent / 100)
+	downloaded = int64(float64(total) * pVal / 100)
+	speed = get("speed")
+	eta = get("eta")
 
-	// Извлекаем скорость
-	speedRegex := regexp.MustCompile(`at\s+(\d+\.?\d*\s*[KMGT]i?B/s)`)
-	speedMatch := speedRegex.FindStringSubmatch(line)
-	speed := ""
-	if len(speedMatch) >= 2 {
-		speed = speedMatch[1]
-	}
-
-	// Извлекаем ETA
-	etaRegex := regexp.MustCompile(`ETA\s+(\d+:\d+)`)
-	etaMatch := etaRegex.FindStringSubmatch(line)
-	eta := ""
-	if len(etaMatch) >= 2 {
-		eta = etaMatch[1]
-	}
-
-	return int(percent), downloaded, total, speed, eta
+	return
 }
 
 // findDownloadedFile находит скачанный файл

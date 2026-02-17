@@ -272,9 +272,7 @@ func (h *Handler) handleTextMessage(ctx context.Context, message *tgbotapi.Messa
 
 		// Для Shorts сразу начинаем загрузку
 		if h.downloader.IsYouTubeShorts(url) {
-			if err := h.editMessageText(chatID, messageID, "⏳ Загрузка Shorts..."); err != nil {
-				h.logger.Error("Failed to edit message", slog.Any("error", err))
-			}
+			h.editMsgSilent(chatID, messageID, "⏳ Загрузка Shorts...")
 			downloadCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
 			h.downloadYouTubeVideo(downloadCtx, chatID, messageID, url, "best")
@@ -684,10 +682,8 @@ func (h *Handler) handleCallbackQuery(ctx context.Context, callbackQuery *tgbota
 		h.logger.Warn("State not found for callback",
 			slog.Int64("chat_id", chatID),
 			slog.Int("message_id", messageID))
-		if err := h.editMessageText(chatID, messageID,
-			"❌ Время выбора качества истекло. Отправь ссылку заново."); err != nil {
-			h.logger.Error("Failed to edit message", slog.Any("error", err))
-		}
+		h.editMsgSilent(chatID, messageID,
+			"❌ Время выбора качества истекло. Отправь ссылку заново.")
 		return
 	}
 
@@ -700,17 +696,13 @@ func (h *Handler) handleCallbackQuery(ctx context.Context, callbackQuery *tgbota
 
 	// Для Shorts просто скачиваем без выбора качества
 	if h.downloader.IsYouTubeShorts(state.VideoURL) {
-		if err := h.editMessageText(chatID, messageID, "⏳ Загрузка Shorts..."); err != nil {
-			h.logger.Error("Failed to edit message", slog.Any("error", err))
-		}
+		h.editMsgSilent(chatID, messageID, "⏳ Загрузка Shorts...")
 		h.downloadYouTubeVideo(ctx, chatID, messageID, state.VideoURL, "best")
 		return
 	}
 
 	// Показываем прогресс и начинаем загрузку
-	if err := h.editMessageText(chatID, messageID, "⏳ Начинаю загрузку..."); err != nil {
-		h.logger.Error("Failed to edit message", slog.Any("error", err))
-	}
+	h.editMsgSilent(chatID, messageID, "⏳ Начинаю загрузку...")
 	h.downloadYouTubeVideo(ctx, chatID, messageID, state.VideoURL, quality)
 }
 
@@ -870,17 +862,13 @@ func (h *Handler) downloadYouTubeVideo(
 			text += fmt.Sprintf("\n⏱ Осталось: %s", eta)
 		}
 
-		if err := h.editMessageText(chatID, messageID, text); err != nil {
-			h.logger.Warn("Failed to edit progress message", slog.Any("error", err))
-		}
+		h.editMsgSilent(chatID, messageID, text)
 	}
 
 	// Скачиваем видео
 	result, err := h.downloader.DownloadYouTubeWithQuality(ctx, videoURL, quality, progressCallback)
 	if err != nil {
-		if e := h.editMessageText(chatID, messageID, fmt.Sprintf("❌ Ошибка при загрузке: %s", err.Error())); e != nil {
-			h.logger.Warn("Failed to edit error message", slog.Any("error", e))
-		}
+		h.editMsgSilent(chatID, messageID, fmt.Sprintf("❌ Ошибка при загрузке: %v", err))
 		return
 	}
 
@@ -891,9 +879,7 @@ func (h *Handler) downloadYouTubeVideo(
 	}()
 
 	// Отправляем файл
-	if e := h.editMessageText(chatID, messageID, "📤 Отправка видео..."); e != nil {
-		h.logger.Warn("Failed to edit message", slog.Any("error", e))
-	}
+	h.editMsgSilent(chatID, messageID, "📤 Отправка видео...")
 
 	var sendErr error
 	switch result.Type {
@@ -906,7 +892,7 @@ func (h *Handler) downloadYouTubeVideo(
 	}
 
 	if sendErr != nil {
-		h.editMessageText(chatID, messageID, fmt.Sprintf("❌ Ошибка при отправке: %s", sendErr.Error()))
+		h.editMsgSilent(chatID, messageID, fmt.Sprintf("❌ Ошибка при отправке: %v", sendErr))
 		return
 	}
 
@@ -1220,4 +1206,12 @@ func (h *Handler) sendAudio(chatID int64, filePath string) error {
 
 	h.logger.Info("Audio sent successfully", slog.Int64("chat_id", chatID))
 	return nil
+}
+
+// editSilent - обертка, которая не возвращаяет ошибку, обход линтера
+func (h *Handler) editMsgSilent(chatID int64, msgID int, text string) {
+	if err := h.editMessageText(chatID, msgID, text); err != nil {
+		// Здесь мы просто логируем проблему, чтобы она не пропала
+		slog.Error("failed to edit message", "error", err, "msgID", msgID)
+	}
 }
