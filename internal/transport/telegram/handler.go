@@ -256,8 +256,18 @@ func (h *Handler) handleTextMessage(ctx context.Context, message *tgbotapi.Messa
 	}
 
 	// Для YouTube показываем выбор качества
+	if h.downloader == nil {
+		h.logger.Error("downloader is nil")
+		h.sendMessage(chatID, "❌ Внутренняя ошибка: сервис загрузки недоступен")
+		return
+	}
+	
 	if h.downloader.IsYouTubeURL(url) {
 		statusMsg := h.sendMessage(chatID, "⏳ Анализирую видео...")
+		if statusMsg == nil {
+			h.logger.Error("Failed to send status message")
+			return
+		}
 		messageID := h.safeMessageID(statusMsg)
 
 		// Для Shorts сразу начинаем загрузку
@@ -597,6 +607,21 @@ func (h *Handler) maxAllowedFileSize() int64 {
 // handleCallbackQuery обрабатывает callback queries от inline keyboards
 func (h *Handler) handleCallbackQuery(ctx context.Context, callbackQuery *tgbotapi.CallbackQuery) {
 	if callbackQuery == nil || callbackQuery.Message == nil {
+		h.logger.Warn("Callback query or message is nil")
+		return
+	}
+
+	// Проверяем инициализацию handler
+	if h.stateManager == nil {
+		h.logger.Error("stateManager is nil in handleCallbackQuery")
+		return
+	}
+	if h.downloader == nil {
+		h.logger.Error("downloader is nil in handleCallbackQuery")
+		return
+	}
+	if h.bot == nil {
+		h.logger.Error("bot is nil in handleCallbackQuery")
 		return
 	}
 
@@ -604,9 +629,17 @@ func (h *Handler) handleCallbackQuery(ctx context.Context, callbackQuery *tgbota
 	messageID := callbackQuery.Message.MessageID
 	data := callbackQuery.Data
 
+	h.logger.Info("Received callback query",
+		slog.Int64("chat_id", chatID),
+		slog.Int("message_id", messageID),
+		slog.String("data", data),
+	)
+
 	// Отвечаем на callback чтобы убрать "часики"
 	callback := tgbotapi.NewCallback(callbackQuery.ID, "")
-	h.bot.Request(callback)
+	if _, err := h.bot.Request(callback); err != nil {
+		h.logger.Error("Failed to answer callback", slog.Any("error", err))
+	}
 
 	// Проверяем, что это callback для выбора качества
 	if !strings.HasPrefix(data, "yt_quality:") {
@@ -646,6 +679,18 @@ func (h *Handler) handleCallbackQuery(ctx context.Context, callbackQuery *tgbota
 
 // showQualitySelection показывает inline keyboard с выбором качества
 func (h *Handler) showQualitySelection(chatID int64, videoURL string, messageID int) {
+	// Проверяем инициализацию
+	if h.downloader == nil {
+		h.logger.Error("downloader is nil in showQualitySelection")
+		h.sendMessage(chatID, "❌ Внутренняя ошибка: сервис загрузки недоступен")
+		return
+	}
+	if h.stateManager == nil {
+		h.logger.Error("stateManager is nil in showQualitySelection")
+		h.sendMessage(chatID, "❌ Внутренняя ошибка: менеджер состояний недоступен")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
