@@ -105,11 +105,11 @@ func (d *Downloader) DownloadWithQuality(
 func (d *Downloader) qualityToFormat(quality string) string {
 	switch quality {
 	case "2160":
-		// 4K: сначала пробуем найти уже объединенный формат 2160p
-		return "best[height=2160][ext=mp4]/best[height<=2160][ext=mp4]/best[height<=2160]"
+		// 4K: ищем любой формат 2160p (часто только webm)
+		return "best[height=2160]/best[height<=2160]/best"
 	case "1440":
-		// 2K: сначала пробуем найти уже объединенный формат 1440p
-		return "best[height=1440][ext=mp4]/best[height<=1440][ext=mp4]/best[height<=1440]"
+		// 2K: ищем любой формат 1440p
+		return "best[height=1440]/best[height<=1440]/best"
 	case "1080":
 		// Сначала пробуем найти уже объединенный формат 1080p, иначе best <=1080
 		return "best[height=1080][ext=mp4]/best[height<=1080][ext=mp4]/best[height<=1080]"
@@ -270,6 +270,8 @@ func (d *Downloader) downloadWithProgress(
 		"--no-warnings",
 		"--newline",
 		"--progress",
+		"--merge-output-format", "mp4",
+		"--remux-video", "mp4",
 	}
 
 	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
