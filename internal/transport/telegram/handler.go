@@ -1009,8 +1009,8 @@ func (h *Handler) sendPhoto(chatID int64, filePath string) error {
 		return fmt.Errorf("failed to get file info: %w", err)
 	}
 
-	// Проверяем размер файла перед отправкой (для фото лимит 10MB)
-	const maxPhotoSize = int64(10 * 1024 * 1024)
+	// Проверяем размер файла перед отправкой (для фото лимит 50MB как и для видео)
+	const maxPhotoSize = int64(50 * 1024 * 1024)
 	if fileInfo.Size() > maxPhotoSize {
 		return fmt.Errorf("photo size %d exceeds maximum allowed size %d", fileInfo.Size(), maxPhotoSize)
 	}

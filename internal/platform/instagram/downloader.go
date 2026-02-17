@@ -61,14 +61,21 @@ func (d *Downloader) DownloadWithType(ctx context.Context, url string) (*Downloa
 		return nil, fmt.Errorf("yt-dlp not found. Please install yt-dlp: https://github.com/yt-dlp/yt-dlp")
 	}
 
-	// Сначала получаем информацию о медиа для определения типа
-	mediaType, err := d.detectMediaType(ctx, url)
-	if err != nil {
-		d.logger.Warn("Failed to detect media type, defaulting to video",
-			slog.String("url", url),
-			slog.Any("error", err),
-		)
-		mediaType = MediaTypeVideo
+	// Для Reels всегда видео (по URL)
+	mediaType := MediaTypeVideo
+	if IsReelURL(url) {
+		d.logger.Info("URL is a Reel, forcing video type", slog.String("url", url))
+	} else {
+		// Для остальных пытаемся определить тип
+		detectedType, err := d.detectMediaType(ctx, url)
+		if err != nil {
+			d.logger.Warn("Failed to detect media type, defaulting to video",
+				slog.String("url", url),
+				slog.Any("error", err),
+			)
+		} else {
+			mediaType = detectedType
+		}
 	}
 
 	d.logger.Info("Detected media type", slog.String("type", string(mediaType)), slog.String("url", url))
@@ -242,6 +249,12 @@ func (d *Downloader) getFormatString() string {
 	default:
 		return "best[ext=mp4]/best"
 	}
+}
+
+// IsReelURL проверяет, является ли URL ссылкой на Reel
+func IsReelURL(url string) bool {
+	lowerURL := strings.ToLower(url)
+	return strings.Contains(lowerURL, "/reel/") || strings.Contains(lowerURL, "/reels/")
 }
 
 // IsValidURL проверяет, является ли URL валидной ссылкой на Instagram
