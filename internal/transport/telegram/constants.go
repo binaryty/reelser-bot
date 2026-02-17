@@ -13,4 +13,8 @@ const (
 
 	// Description for supported platforms used in inline results
 	PlatformsSupported = "Поддерживаются YouTube, TikTok и Instagram"
+
+	// Chat types
+	ChatTypeGroup      = "group"
+	ChatTypeSupergroup = "supergroup"
 )

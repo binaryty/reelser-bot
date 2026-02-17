@@ -98,7 +98,7 @@ func (b *Bot) Start() error {
 					b.logger.Info("Update worker stopped", slog.Int("worker_id", id))
 					return
 				case update := <-b.updateQueue:
-					b.handler.HandleUpdate(b.ctx, update)
+					b.handler.HandleUpdate(b.ctx, &update)
 				}
 			}
 		}(workerID)

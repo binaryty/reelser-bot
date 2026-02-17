@@ -92,7 +92,7 @@ func (h *Handler) startWorkers() {
 }
 
 // HandleUpdate обрабатывает обновление от Telegram
-func (h *Handler) HandleUpdate(ctx context.Context, update tgbotapi.Update) {
+func (h *Handler) HandleUpdate(ctx context.Context, update *tgbotapi.Update) {
 	// Обработка паник для предотвращения падения приложения
 	defer func() {
 		if r := recover(); r != nil {
@@ -160,7 +160,7 @@ func (h *Handler) handleMessage(ctx context.Context, message *tgbotapi.Message) 
 	)
 
 	// В группах и супергруппах бот должен быть упомянут
-	if message.Chat.Type == "group" || message.Chat.Type == "supergroup" {
+	if message.Chat.Type == ChatTypeGroup || message.Chat.Type == ChatTypeSupergroup {
 		if !h.isBotMentioned(message) {
 			// Игнорируем сообщения без упоминания бота в группах
 			return
@@ -233,7 +233,7 @@ func (h *Handler) handleTextMessage(ctx context.Context, message *tgbotapi.Messa
 	chatID := message.Chat.ID
 	text := strings.TrimSpace(message.Text)
 
-	if message.Chat.Type == "group" || message.Chat.Type == "supergroup" {
+	if message.Chat.Type == ChatTypeGroup || message.Chat.Type == ChatTypeSupergroup {
 		if !h.isBotMentioned(message) {
 			return
 		}
@@ -328,7 +328,9 @@ func (h *Handler) handleQueueOverflow(chatID int64, statusMessageID int) {
 	if statusMessageID != 0 {
 		h.deleteMessage(chatID, statusMessageID)
 	}
-	h.sendMessage(chatID, "⚠️ Слишком много одновременных запросов. Попробуй повторить через пару минут.")
+	h.sendMessage(chatID,
+		"⚠️ Слишком много одновременных запросов. "+
+			"Попробуй повторить через пару минут.")
 }
 
 func (h *Handler) processDownload(req *downloadRequest) {
@@ -451,17 +453,21 @@ func (h *Handler) handleAuthFlow(message *tgbotapi.Message) {
 
 	// Если это команда или пустое сообщение — просто просим отправить токен
 	if text == "" || message.IsCommand() {
-		h.sendMessage(chatID, "🔒 Этот бот доступен только по токену доступа.\nОтправь мне токен, который выдал администратор.")
+		h.sendMessage(chatID,
+			"🔒 Этот бот доступен только по токену доступа.\n"+
+				"Отправь мне токен, который выдал администратор.")
 		return
 	}
 
 	// Пытаемся авторизовать пользователя по присланному тексту
 	if ok := h.auth.TryAuthorize(userID, text); !ok {
-		h.sendMessage(chatID, "❌ Неверный токен доступа.\nПроверь токен или обратись к администратору.")
+		h.sendMessage(chatID,
+			"❌ Неверный токен доступа.\nПроверь токен или обратись к администратору.")
 		return
 	}
 
-	h.sendMessage(chatID, "✅ Авторизация успешна! Теперь ты можешь отправлять ссылки на видео.")
+	h.sendMessage(chatID,
+		"✅ Авторизация успешна! Теперь ты можешь отправлять ссылки на видео.")
 }
 
 func (h *Handler) handleInlineQuery(inlineQuery *tgbotapi.InlineQuery) {
@@ -490,13 +496,16 @@ func (h *Handler) handleInlineQuery(inlineQuery *tgbotapi.InlineQuery) {
 		slog.String("query", queryText),
 	)
 
-	// Если включена авторизация и пользователь не авторизован — показываем подсказку
-	if h.auth != nil && h.auth.IsEnabled() && !h.auth.IsAuthorized(userID) {
+	// Если включена авторизация и пользователь не авторизован - подсказка
+	if h.auth != nil && h.auth.IsEnabled() &&
+		!h.auth.IsAuthorized(userID) {
 		results := []interface{}{
 			tgbotapi.NewInlineQueryResultArticle(
 				inlineQuery.ID+"-auth",
 				"Требуется авторизация",
-				"Этот бот защищён.\nОткрой личный чат с ботом и отправь токен доступа, который выдал администратор.",
+				"Этот бот защищён.\n"+
+					"Открой личный чат с ботом и отправь токен доступа, "+
+					"который выдал администратор.",
 			),
 		}
 
@@ -537,7 +546,10 @@ func (h *Handler) buildInlineResults(queryID, rawQuery string) []interface{} {
 	var results []interface{}
 
 	if url := h.extractURL(rawQuery); url != "" && h.containsURL(url) {
-		messageText := fmt.Sprintf("⏳ Запрос на скачивание:\n%s\n\nБот отправит видео в личные сообщения.", url)
+		messageText := fmt.Sprintf(
+			"⏳ Запрос на скачивание:\n%s\n\nБот отправит видео в личные сообщения.",
+			url,
+		)
 		result := tgbotapi.NewInlineQueryResultArticle(queryID+"-download", "Скачать видео", messageText)
 		result.Description = PlatformsSupported
 		results = append(results, result)
@@ -578,7 +590,9 @@ func (h *Handler) handleChosenInlineResult(ctx context.Context, result *tgbotapi
 		h.logger.Warn("Unauthenticated user tried to use inline chosen result",
 			slog.Int64("user_id", userID),
 		)
-		h.sendMessage(chatID, "🔒 Этот бот защищён. Отправь токен доступа в личные сообщения бота, чтобы продолжить использование.")
+		h.sendMessage(chatID,
+			"🔒 Этот бот защищён. Отправь токен доступа в личные сообщения бота, "+
+				"чтобы продолжить использование.")
 		return
 	}
 	statusMsg := h.sendMessage(chatID, "⏳ Обработка inline-запроса, загружаю видео...")
@@ -667,8 +681,11 @@ func (h *Handler) handleCallbackQuery(ctx context.Context, callbackQuery *tgbota
 	// Получаем сохраненное состояние
 	state, exists := h.stateManager.Get(chatID, messageID)
 	if !exists {
-		h.logger.Warn("State not found for callback", slog.Int64("chat_id", chatID), slog.Int("message_id", messageID))
-		if err := h.editMessageText(chatID, messageID, "❌ Время выбора качества истекло. Отправь ссылку заново."); err != nil {
+		h.logger.Warn("State not found for callback",
+			slog.Int64("chat_id", chatID),
+			slog.Int("message_id", messageID))
+		if err := h.editMessageText(chatID, messageID,
+			"❌ Время выбора качества истекло. Отправь ссылку заново."); err != nil {
 			h.logger.Error("Failed to edit message", slog.Any("error", err))
 		}
 		return
@@ -867,7 +884,11 @@ func (h *Handler) downloadYouTubeVideo(
 		return
 	}
 
-	defer h.downloader.Cleanup(result.FilePath)
+	defer func() {
+		if err := h.downloader.Cleanup(result.FilePath); err != nil {
+			h.logger.Warn("Failed to cleanup file", slog.String("file", result.FilePath), slog.Any("error", err))
+		}
+	}()
 
 	// Отправляем файл
 	if e := h.editMessageText(chatID, messageID, "📤 Отправка видео..."); e != nil {
@@ -927,13 +948,17 @@ func (h *Handler) editMessageReplyMarkup(chatID int64, messageID int, markup *tg
 		_, err := h.bot.Request(msg)
 		return err
 	}
-	edit := tgbotapi.NewEditMessageReplyMarkup(chatID, messageID, *markup)
+	edit := tgbotapi.NewEditMessageReplyMarkup(
+		chatID, messageID, *markup)
 	_, err := h.bot.Request(edit)
 	return err
 }
 
 // editMessageTextAndMarkup редактирует текст и keyboard
-func (h *Handler) editMessageTextAndMarkup(chatID int64, messageID int, text string, markup *tgbotapi.InlineKeyboardMarkup) (*tgbotapi.Message, error) {
+func (h *Handler) editMessageTextAndMarkup(
+	chatID int64, messageID int, text string,
+	markup *tgbotapi.InlineKeyboardMarkup,
+) (*tgbotapi.Message, error) {
 	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
 	edit.ParseMode = ParseModeHTML
 	edit.ReplyMarkup = markup
@@ -985,11 +1010,11 @@ func (h *Handler) removeBotMentionFromText(text string) string {
 		return text
 	}
 
-	target := "@" + strings.ToLower(h.botUsername)
+	target := "@" + h.botUsername
 	words := strings.Fields(text)
 	cleaned := make([]string, 0, len(words))
 	for _, word := range words {
-		if strings.ToLower(word) == target {
+		if strings.EqualFold(word, target) {
 			continue
 		}
 		cleaned = append(cleaned, word)
@@ -1082,10 +1107,12 @@ func (h *Handler) sendVideo(chatID int64, filePath string) error {
 	// Проверяем размер файла перед отправкой
 	maxAllowed := h.maxAllowedFileSize()
 	if fileInfo.Size() > maxAllowed {
-		return fmt.Errorf("file size %d exceeds maximum allowed size %d", fileInfo.Size(), maxAllowed)
+		return fmt.Errorf("file size %d exceeds maximum allowed size %d",
+			fileInfo.Size(), maxAllowed)
 	}
 
-	// Используем FileReader для потоковой отправки вместо загрузки всего файла в память
+	// Используем FileReader для потоковой отправки
+	// вместо загрузки всего файла в память
 	fileReader := tgbotapi.FileReader{
 		Name:   fileInfo.Name(),
 		Reader: file,

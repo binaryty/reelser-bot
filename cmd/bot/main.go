@@ -79,8 +79,8 @@ func main() {
 
 	// Запуск бота в отдельной горутине
 	go func() {
-		if err := bot.Start(); err != nil {
-			logger.Error("Bot stopped with error", slog.Any("error", err))
+		if runErr := bot.Start(); runErr != nil {
+			logger.Error("Bot stopped with error", slog.Any("error", runErr))
 		}
 	}()
 
@@ -116,7 +116,7 @@ func initLogger() *slog.Logger {
 		handler = &multiHandler{handlers: []slog.Handler{consoleHandler, fileHandler}}
 	} else {
 		// Если файл открыть не удалось — продолжаем логировать только в консоль
-		consoleHandler.Handle(
+		_ = consoleHandler.Handle(
 			context.Background(),
 			slog.Record{
 				Time:    time.Now(),

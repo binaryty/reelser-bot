@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/reelser-bot/internal/common"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/reelser-bot/internal/common"
 )
 
 // VideoQuality представляет доступное качество видео
@@ -102,7 +103,8 @@ func (d *Downloader) DownloadWithQuality(
 }
 
 // qualityToFormat преобразует запрошенное качество в форматную строку yt-dlp
-// Используем уже объединенные форматы (содержащие и видео и аудио) чтобы избежать проблем с мержем
+// Используем уже объединенные форматы (содержащие и видео и аудио)
+// чтобы избежать проблем с мержем
 func (d *Downloader) qualityToFormat(quality string) string {
 	switch quality {
 	case "2160":
@@ -172,8 +174,8 @@ func (d *Downloader) GetAvailableQualities(ctx context.Context, videoURL string)
 
 	for _, f := range videoInfo.Formats {
 		// Пропускаем аудио-only форматы для видео списка
-		if f.Vcodec == "none" || f.Vcodec == "" {
-			if f.Acodec != "none" && f.Acodec != "" {
+		if f.Vcodec == common.NoneConst || f.Vcodec == "" {
+			if f.Acodec != common.NoneConst && f.Acodec != "" {
 				hasAudio = true
 			}
 			continue
@@ -492,7 +494,10 @@ func (d *Downloader) getSaveFromURL(ctx context.Context, videoURL string) (strin
 }
 
 // downloadFromURL скачивает файл по прямой ссылке
-func (d *Downloader) downloadFromURL(ctx context.Context, downloadURL, originalURL string, progressCallback ProgressCallback) (string, error) {
+func (d *Downloader) downloadFromURL(
+	ctx context.Context, downloadURL, originalURL string,
+	progressCallback ProgressCallback,
+) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, http.NoBody)
 	if err != nil {
 		return "", fmt.Errorf("failed to create download request: %w", err)
