@@ -36,8 +36,11 @@ func NewDownloader(logger *slog.Logger, tempDir, videoQuality string) *Downloade
 	}
 }
 
+const maxFileSizeMB = 50
+
 // Download скачивает видео с YouTube используя yt-dlp с retry logic
 // и fallback на SaveFrom API если yt-dlp не справляется
+// Автоматически выбирает качество чтобы файл был < 50MB
 // Возвращает путь к скачанному файлу
 func (d *Downloader) Download(ctx context.Context, videoURL string) (string, error) {
 	d.logger.Info("Starting YouTube video download", slog.String("url", videoURL))
@@ -50,9 +53,26 @@ func (d *Downloader) Download(ctx context.Context, videoURL string) (string, err
 		return d.downloadViaSaveFrom(ctx, videoURL)
 	}
 
+	// Получаем информацию о видео и выбираем подходящий формат
+	format, err := d.selectFormatBySize(ctx, videoURL)
+	if err != nil {
+		d.logger.Warn("Could not determine video size, using default format",
+			slog.String("url", videoURL),
+			slog.Any("error", err),
+		)
+		format = d.getFormatString()
+	}
+
+	d.logger.Info("Selected format", slog.String("format", format), slog.String("url", videoURL))
+
 	// Пробуем скачать с yt-dlp и retry logic
-	file, err := d.downloadWithRetry(ctx, videoURL)
+	file, err := d.downloadWithRetry(ctx, videoURL, format)
 	if err == nil {
+		// Проверяем размер файла
+		if info, err := os.Stat(file); err == nil {
+			sizeMB := float64(info.Size()) / (1024 * 1024)
+			d.logger.Info("Downloaded file size", slog.Float64("size_mb", sizeMB), slog.String("file", file))
+		}
 		return file, nil
 	}
 
@@ -66,7 +86,7 @@ func (d *Downloader) Download(ctx context.Context, videoURL string) (string, err
 }
 
 // downloadWithRetry пытается скачать видео с retry logic
-func (d *Downloader) downloadWithRetry(ctx context.Context, videoURL string) (string, error) {
+func (d *Downloader) downloadWithRetry(ctx context.Context, videoURL string, format string) (string, error) {
 	var lastErr error
 
 	for attempt := 1; attempt <= 3; attempt++ {
@@ -75,7 +95,7 @@ func (d *Downloader) downloadWithRetry(ctx context.Context, videoURL string) (st
 			slog.String("url", videoURL),
 		)
 
-		file, err := d.tryDownload(ctx, videoURL, attempt)
+		file, err := d.tryDownload(ctx, videoURL, attempt, format)
 		if err == nil {
 			return file, nil
 		}
@@ -100,12 +120,12 @@ func (d *Downloader) downloadWithRetry(ctx context.Context, videoURL string) (st
 }
 
 // tryDownload выполняет одну попытку скачивания с разными параметрами
-func (d *Downloader) tryDownload(ctx context.Context, videoURL string, attempt int) (string, error) {
+func (d *Downloader) tryDownload(ctx context.Context, videoURL string, attempt int, format string) (string, error) {
 	// Создаем временный файл для сохранения видео
 	outputFile := filepath.Join(d.tempDir, "yt_%(title)s.%(ext)s")
 
 	// Формируем команду yt-dlp с разными параметрами для каждой попытки
-	args := d.buildArgs(videoURL, outputFile, attempt)
+	args := d.buildArgs(videoURL, outputFile, attempt, format)
 
 	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
 	cmd.Dir = d.tempDir
@@ -127,7 +147,7 @@ func (d *Downloader) tryDownload(ctx context.Context, videoURL string, attempt i
 }
 
 // buildArgs формирует аргументы для yt-dlp в зависимости от попытки
-func (d *Downloader) buildArgs(videoURL, outputFile string, attempt int) []string {
+func (d *Downloader) buildArgs(videoURL, outputFile string, attempt int, format string) []string {
 	args := []string{
 		videoURL,
 		"-o", outputFile,
@@ -138,15 +158,14 @@ func (d *Downloader) buildArgs(videoURL, outputFile string, attempt int) []strin
 
 	switch attempt {
 	case 1:
-		// Первая попытка - стандартные настройки
-		args = append(args,
-			"-f", d.getFormatString(),
-		)
+		// Первая попытка - используем выбранный формат
+		args = append(args, "-f", format)
 
 	case 2:
 		// Вторая попытка - с задержкой и специфичными флагами для YouTube
+		// Используем более низкое качество
 		args = append(args,
-			"-f", "best[ext=mp4]/best",
+			"-f", "worst[ext=mp4]/worst",
 			"--extractor-args", "youtube:player_client=web",
 			"--extractor-args", "youtube:player_skip=webpage,configs,js",
 			"--sleep-requests", "2",
@@ -157,7 +176,7 @@ func (d *Downloader) buildArgs(videoURL, outputFile string, attempt int) []strin
 	case 3:
 		// Третья попытка - упрощенный формат и мобильный клиент
 		args = append(args,
-			"-f", "best[ext=mp4]/best",
+			"-f", "worst[ext=mp4]/worst",
 			"--extractor-args", "youtube:player_client=android",
 			"--user-agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
 			"--geo-bypass",
@@ -336,6 +355,141 @@ func (d *Downloader) getFormatString() string {
 	default:
 		return "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
 	}
+}
+
+// selectFormatBySize выбирает формат видео исходя из ограничения на размер (50MB)
+func (d *Downloader) selectFormatBySize(ctx context.Context, videoURL string) (string, error) {
+	// Получаем информацию о форматах видео
+	args := []string{
+		videoURL,
+		"-J", // JSON output
+		"--no-playlist",
+		"--no-warnings",
+		"--quiet",
+	}
+
+	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to get video info: %w", err)
+	}
+
+	var videoInfo struct {
+		Duration float64 `json:"duration"`
+		Formats  []struct {
+			FormatID   string  `json:"format_id"`
+			Ext        string  `json:"ext"`
+			Resolution string  `json:"resolution"`
+			Filesize   int64   `json:"filesize"`
+			FilesizeApprox float64 `json:"filesize_approx"`
+			Width      int     `json:"width"`
+			Height     int     `json:"height"`
+			Vcodec     string  `json:"vcodec"`
+			Acodec     string  `json:"acodec"`
+		} `json:"formats"`
+	}
+
+	if err := json.Unmarshal(output, &videoInfo); err != nil {
+		return "", fmt.Errorf("failed to parse video info: %w", err)
+	}
+
+	// Если видео короткое (< 5 минут), пробуем скачать в хорошем качестве
+	// Иначе выбираем формат поменьше
+	maxSizeBytes := int64(maxFileSizeMB * 1024 * 1024)
+	
+	// Фильтруем только mp4 форматы с видео
+	var suitableFormats []struct {
+		FormatID   string
+		Resolution string
+		Filesize   int64
+		Width      int
+		Height     int
+	}
+	
+	for _, f := range videoInfo.Formats {
+		// Пропускаем аудио-only форматы
+		if f.Vcodec == "none" || f.Vcodec == "" {
+			continue
+		}
+		// Берем только mp4
+		if f.Ext != "mp4" && f.Ext != "" {
+			continue
+		}
+		
+		size := f.Filesize
+		if size == 0 && f.FilesizeApprox > 0 {
+			size = int64(f.FilesizeApprox)
+		}
+		
+		suitableFormats = append(suitableFormats, struct {
+			FormatID   string
+			Resolution string
+			Filesize   int64
+			Width      int
+			Height     int
+		}{
+			FormatID:   f.FormatID,
+			Resolution: f.Resolution,
+			Filesize:   size,
+			Width:      f.Width,
+			Height:     f.Height,
+		})
+	}
+	
+	if len(suitableFormats) == 0 {
+		return "best[ext=mp4]/best", nil
+	}
+	
+	// Сортируем по качеству (разрешению) от высокого к низкому
+	for i := 0; i < len(suitableFormats)-1; i++ {
+		for j := i + 1; j < len(suitableFormats); j++ {
+			if suitableFormats[i].Height < suitableFormats[j].Height {
+				suitableFormats[i], suitableFormats[j] = suitableFormats[j], suitableFormats[i]
+			}
+		}
+	}
+	
+	// Для длинных видео (> 10 минут) сразу выбираем низкое качество
+	if videoInfo.Duration > 600 {
+		d.logger.Info("Long video detected, selecting low quality", 
+			slog.Float64("duration", videoInfo.Duration),
+		)
+		return "worst[ext=mp4]/worst", nil
+	}
+	
+	// Ищем формат с размером < 50MB
+	for _, f := range suitableFormats {
+		if f.Filesize > 0 && f.Filesize < maxSizeBytes {
+			d.logger.Info("Selected format by size",
+				slog.String("format_id", f.FormatID),
+				slog.String("resolution", f.Resolution),
+				slog.Int64("filesize", f.Filesize),
+			)
+			return f.FormatID, nil
+		}
+	}
+	
+	// Если не нашли подходящий по размеру, выбираем по разрешению
+	// Для видео > 5 минут - максимум 720p
+	// Для видео < 5 минут - максимум 1080p
+	maxHeight := 1080
+	if videoInfo.Duration > 300 {
+		maxHeight = 720
+	}
+	
+	for _, f := range suitableFormats {
+		if f.Height > 0 && f.Height <= maxHeight {
+			d.logger.Info("Selected format by resolution",
+				slog.String("format_id", f.FormatID),
+				slog.String("resolution", f.Resolution),
+				slog.Int("height", f.Height),
+			)
+			return f.FormatID, nil
+		}
+	}
+	
+	// Fallback на худшее качество
+	return "worst[ext=mp4]/worst", nil
 }
 
 // truncateString обрезает строку до указанной длины
