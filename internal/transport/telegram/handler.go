@@ -589,6 +589,11 @@ func (h *Handler) safeMessageID(msg *tgbotapi.Message) int {
 	return msg.MessageID
 }
 
+// maxAllowedFileSize возвращает максимальный размер файла для Telegram (50MB)
+func (h *Handler) maxAllowedFileSize() int64 {
+	return int64(50 * 1024 * 1024)
+}
+
 // handleCallbackQuery обрабатывает callback queries от inline keyboards
 func (h *Handler) handleCallbackQuery(ctx context.Context, callbackQuery *tgbotapi.CallbackQuery) {
 	if callbackQuery == nil || callbackQuery.Message == nil {
@@ -614,7 +619,7 @@ func (h *Handler) handleCallbackQuery(ctx context.Context, callbackQuery *tgbota
 		return
 	}
 
-	videoID := parts[1]
+	_ = parts[1] // videoID не используется напрямую, хранится в state
 	quality := parts[2]
 
 	// Получаем сохраненное состояние
@@ -839,7 +844,7 @@ func (h *Handler) editMessageTextAndMarkup(chatID int64, messageID int, text str
 	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
 	edit.ParseMode = "HTML"
 	edit.ReplyMarkup = markup
-	resp, err := h.bot.Request(edit)
+	_, err := h.bot.Request(edit)
 	if err != nil {
 		return nil, err
 	}
