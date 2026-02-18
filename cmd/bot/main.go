@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -31,7 +32,7 @@ func main() {
 	logger.Info("Configuration loaded successfully")
 
 	// Создание временной директории
-	if err := os.MkdirAll(cfg.Download.TempDir, 0755); err != nil {
+	if err = os.MkdirAll(cfg.Download.TempDir, 0755); err != nil {
 		logger.Error("Failed to create temp directory",
 			slog.String("dir", cfg.Download.TempDir),
 			slog.Any("error", err),
@@ -79,8 +80,8 @@ func main() {
 
 	// Запуск бота в отдельной горутине
 	go func() {
-		if err := bot.Start(); err != nil {
-			logger.Error("Bot stopped with error", slog.Any("error", err))
+		if runErr := bot.Start(); runErr != nil {
+			logger.Error("Bot stopped with error", slog.Any("error", runErr))
 		}
 	}()
 
@@ -116,7 +117,7 @@ func initLogger() *slog.Logger {
 		handler = &multiHandler{handlers: []slog.Handler{consoleHandler, fileHandler}}
 	} else {
 		// Если файл открыть не удалось — продолжаем логировать только в консоль
-		consoleHandler.Handle(
+		err = consoleHandler.Handle(
 			context.Background(),
 			slog.Record{
 				Time:    time.Now(),
@@ -124,6 +125,9 @@ func initLogger() *slog.Logger {
 				Message: "Failed to open log file, logging only to stderr",
 			},
 		)
+		if err != nil {
+			return nil
+		}
 	}
 
 	logger := slog.New(handler)
@@ -137,6 +141,7 @@ type multiHandler struct {
 	handlers []slog.Handler
 }
 
+// nolint:gocritic // r is passed by value to match slog.Handler interface
 func (m *multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	for _, h := range m.handlers {
 		if h.Enabled(ctx, level) {
@@ -146,10 +151,14 @@ func (m *multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return false
 }
 
+// nolint:gocritic // r is passed by value to match slog.Handler interface
 func (m *multiHandler) Handle(ctx context.Context, r slog.Record) error {
 	for _, h := range m.handlers {
 		// Игнорируем ошибки отдельных хендлеров, чтобы не блокировать логирование
-		_ = h.Handle(ctx, r)
+		if err := h.Handle(ctx, r); err != nil {
+			// Печатаем ошибку в stderr, чтобы не зациклить логирование через сам slog
+			fmt.Fprintf(os.Stderr, "slog: multiHandler failed: %v\n", err)
+		}
 	}
 	return nil
 }

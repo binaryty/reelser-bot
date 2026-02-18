@@ -13,9 +13,29 @@ import (
 	"github.com/reelser-bot/internal/platform/yt"
 )
 
+// MediaType представляет тип медиа
+type MediaType string
+
+const (
+	MediaTypeVideo MediaType = "video"
+	MediaTypePhoto MediaType = "photo"
+	MediaTypeAudio MediaType = "audio"
+)
+
+// MediaDownloadResult содержит результат загрузки медиа
+type MediaDownloadResult struct {
+	FilePath string
+	Type     MediaType
+}
+
 // VideoDownloader интерфейс для загрузки видео
 type VideoDownloader interface {
 	Download(ctx context.Context, url string) (string, error) // путь к файлу
+}
+
+// MediaDownloader интерфейс для загрузки медиа с определением типа
+type MediaDownloader interface {
+	DownloadWithType(ctx context.Context, url string) (*MediaDownloadResult, error)
 }
 
 // Service управляет загрузкой видео с разных платформ
@@ -44,17 +64,70 @@ func NewService(
 
 // Download определяет платформу по URL и скачивает видео
 func (s *Service) Download(ctx context.Context, url string) (string, error) {
+	result, err := s.DownloadWithType(ctx, url)
+	if err != nil {
+		return "", err
+	}
+	return result.FilePath, nil
+}
+
+// DownloadWithType определяет платформу по URL и скачивает медиа с определением типа
+func (s *Service) DownloadWithType(ctx context.Context, url string) (*MediaDownloadResult, error) {
 	s.logger.Info("Processing download request", slog.String("url", url))
 
 	// Определяем платформу
 	platform, downloader := s.getDownloader(url)
 	if downloader == nil {
-		return "", fmt.Errorf("unsupported platform or invalid URL: %s", url)
+		return nil, fmt.Errorf("unsupported platform or invalid URL: %s", url)
 	}
 
 	s.logger.Info("Platform detected", slog.String("platform", platform))
 
-	// Скачиваем видео
+	// Для Instagram используем DownloadWithType
+	if instagram.IsValidURL(strings.ToLower(url)) {
+		igResult, err := s.igDownloader.DownloadWithType(ctx, url)
+		if err != nil {
+			s.logger.Error("Failed to download Instagram media",
+				slog.String("url", url),
+				slog.String("platform", platform),
+				slog.Any("error", err),
+			)
+			// Ошибка уже содержит user-friendly сообщение из instagram/downloader.go
+			return nil, err
+		}
+
+		// Проверяем существование файла
+		if _, err := os.Stat(igResult.FilePath); os.IsNotExist(err) {
+			return nil, fmt.Errorf("downloaded file does not exist: %s", igResult.FilePath)
+		}
+
+		s.logger.Info("Media downloaded successfully",
+			slog.String("url", url),
+			slog.String("platform", platform),
+			slog.String("file", igResult.FilePath),
+			slog.String("type", string(igResult.Type)),
+		)
+
+		// Конвертируем тип из instagram в общий тип
+		var mediaType MediaType
+		switch igResult.Type {
+		case instagram.MediaTypeVideo:
+			mediaType = MediaTypeVideo
+		case instagram.MediaTypePhoto:
+			mediaType = MediaTypePhoto
+		case instagram.MediaTypeAudio:
+			mediaType = MediaTypeAudio
+		default:
+			mediaType = MediaTypeVideo
+		}
+
+		return &MediaDownloadResult{
+			FilePath: igResult.FilePath,
+			Type:     mediaType,
+		}, nil
+	}
+
+	// Для других платформ используем обычный Download (только видео)
 	filePath, err := downloader.Download(ctx, url)
 	if err != nil {
 		s.logger.Error("Failed to download video",
@@ -62,12 +135,12 @@ func (s *Service) Download(ctx context.Context, url string) (string, error) {
 			slog.String("platform", platform),
 			slog.Any("error", err),
 		)
-		return "", fmt.Errorf("failed to download video: %w", err)
+		return nil, fmt.Errorf("failed to download video: %w", err)
 	}
 
 	// Проверяем существование файла
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		return "", fmt.Errorf("downloaded file does not exist: %s", filePath)
+		return nil, fmt.Errorf("downloaded file does not exist: %s", filePath)
 	}
 
 	s.logger.Info("Video downloaded successfully",
@@ -76,7 +149,10 @@ func (s *Service) Download(ctx context.Context, url string) (string, error) {
 		slog.String("file", filePath),
 	)
 
-	return filePath, nil
+	return &MediaDownloadResult{
+		FilePath: filePath,
+		Type:     MediaTypeVideo,
+	}, nil
 }
 
 // getDownloader возвращает соответствующий загрузчик для URL
@@ -138,4 +214,67 @@ func (s *Service) GetFileSize(filePath string) (int64, error) {
 		return 0, err
 	}
 	return info.Size(), nil
+}
+
+// DownloadYouTubeWithQuality скачивает YouTube видео с выбранным качеством
+func (s *Service) DownloadYouTubeWithQuality(
+	ctx context.Context,
+	url string,
+	quality string,
+	progressCallback yt.ProgressCallback,
+) (*MediaDownloadResult, error) {
+	s.logger.Info("Downloading YouTube video with quality",
+		slog.String("url", url),
+		slog.String("quality", quality),
+	)
+
+	filePath, err := s.ytDownloader.DownloadWithQuality(ctx, url, quality, progressCallback)
+	if err != nil {
+		s.logger.Error("Failed to download YouTube video",
+			slog.String("url", url),
+			slog.String("quality", quality),
+			slog.Any("error", err),
+		)
+		return nil, fmt.Errorf("failed to download video: %w", err)
+	}
+
+	// Проверяем существование файла
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("downloaded file does not exist: %s", filePath)
+	}
+
+	// Определяем тип медиа по расширению
+	mediaType := MediaTypeVideo
+	if strings.HasSuffix(strings.ToLower(filePath), ".mp3") ||
+		strings.HasSuffix(strings.ToLower(filePath), ".m4a") ||
+		strings.HasSuffix(strings.ToLower(filePath), ".opus") {
+		mediaType = MediaTypeAudio
+	}
+
+	s.logger.Info("YouTube video downloaded successfully",
+		slog.String("url", url),
+		slog.String("quality", quality),
+		slog.String("file", filePath),
+		slog.String("type", string(mediaType)),
+	)
+
+	return &MediaDownloadResult{
+		FilePath: filePath,
+		Type:     mediaType,
+	}, nil
+}
+
+// IsYouTubeURL проверяет, является ли URL ссылкой на YouTube
+func (s *Service) IsYouTubeURL(url string) bool {
+	return yt.IsValidURL(strings.ToLower(url))
+}
+
+// IsYouTubeShorts проверяет, является ли URL ссылкой на YouTube Shorts
+func (s *Service) IsYouTubeShorts(url string) bool {
+	return yt.IsShorts(url)
+}
+
+// GetYouTubeVideoID возвращает ID видео YouTube
+func (s *Service) GetYouTubeVideoID(url string) string {
+	return yt.GetVideoID(url)
 }

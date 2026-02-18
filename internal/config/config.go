@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"runtime"
 	"strconv"
@@ -46,7 +47,9 @@ type AuthConfig struct {
 // Load загружает конфигурацию из переменных окружения
 func Load() (*Config, error) {
 	// Загружаем .env файл, если он существует (игнорируем ошибку, если файла нет)
-	_ = godotenv.Load()
+	if err := godotenv.Load(); err != nil {
+		log.Println(err)
+	}
 
 	cfg := &Config{
 		Telegram: TelegramConfig{
@@ -76,7 +79,8 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// getEnv получает значение переменной окружения или возвращает значение по умолчанию
+// getEnv получает значение переменной окружения
+// или возвращает значение по умолчанию
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -84,7 +88,8 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-// getEnvAsInt получает значение переменной окружения как int или возвращает значение по умолчанию
+// getEnvAsInt получает значение переменной окружения как int
+// или возвращает значение по умолчанию
 func getEnvAsInt(key string, defaultValue int) int {
 	valueStr := os.Getenv(key)
 	if valueStr == "" {
@@ -99,7 +104,8 @@ func getEnvAsInt(key string, defaultValue int) int {
 	return value
 }
 
-// getEnvAsBool получает значение переменной окружения как bool или возвращает значение по умолчанию
+// getEnvAsBool получает значение переменной окружения как bool
+// или возвращает значение по умолчанию
 func getEnvAsBool(key string, defaultValue bool) bool {
 	valueStr := os.Getenv(key)
 	if valueStr == "" {

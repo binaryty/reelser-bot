@@ -20,9 +20,13 @@ ENV APP_HOME=/app \
     WORKER_POOL_SIZE=4
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates python3 python3-pip && \
+    apt-get install -y --no-install-recommends ca-certificates python3 python3-pip curl ffmpeg && \
     pip3 install --no-cache-dir --break-system-packages yt-dlp && \
     rm -rf /var/lib/apt/lists/*
+
+# Скрипт для обновления yt-dlp при старте
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 WORKDIR ${APP_HOME}
 
@@ -32,5 +36,6 @@ RUN mkdir -p ${TEMP_DIR}
 
 VOLUME ["${TEMP_DIR}"]
 
-ENTRYPOINT ["reelser-bot"]
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["reelser-bot"]
 
