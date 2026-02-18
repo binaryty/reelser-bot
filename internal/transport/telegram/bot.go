@@ -78,32 +78,54 @@ func NewBot(
 func (b *Bot) Start() error {
 	b.logger.Info("Starting bot...")
 
-	// Запускаем пул воркеров для обработки апдейтов
+	b.startUpdateWorkers()
+
+	return b.receiveUpdates()
+}
+
+// startUpdateWorkers запускает пул воркеров для обработки апдейтов
+func (b *Bot) startUpdateWorkers() {
+	b.logger.Info("Starting update workers", slog.Int("count", b.updateWorkers))
+
 	for i := 0; i < b.updateWorkers; i++ {
 		workerID := i + 1
-		go func(id int) {
-			defer func() {
-				if r := recover(); r != nil {
-					b.logger.Error("Panic recovered in update worker",
-						slog.Int("worker_id", id),
-						slog.Any("panic", r),
-					)
-				}
-			}()
-
-			b.logger.Info("Update worker started", slog.Int("worker_id", id))
-			for {
-				select {
-				case <-b.ctx.Done():
-					b.logger.Info("Update worker stopped", slog.Int("worker_id", id))
-					return
-				case update := <-b.updateQueue:
-					b.handler.HandleUpdate(b.ctx, &update)
-				}
-			}
-		}(workerID)
+		go b.runUpdateWorker(workerID)
 	}
+}
 
+// runUpdateWorker запускает одного воркера обработки апдейтов
+func (b *Bot) runUpdateWorker(id int) {
+	defer func() {
+		if r := recover(); r != nil {
+			b.logger.Error("Panic recovered in update worker",
+				slog.Int("worker_id", id),
+				slog.Any("panic", r),
+			)
+		}
+	}()
+
+	b.logger.Info("Update worker started", slog.Int("worker_id", id))
+
+	for {
+		select {
+		case <-b.ctx.Done():
+			b.logger.Info("Update worker stopped", slog.Int("worker_id", id))
+			return
+		case update := <-b.updateQueue:
+			b.processUpdate(update)
+		}
+	}
+}
+
+// processUpdate обрабатывает одно обновление
+func (b *Bot) processUpdate(update tgbotapi.Update) {
+	b.logger.Debug("Processing update",
+		slog.Int("update_id", update.UpdateID))
+	b.handler.HandleUpdate(b.ctx, &update)
+}
+
+// receiveUpdates получает обновления от Telegram API
+func (b *Bot) receiveUpdates() error {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 
@@ -116,17 +138,21 @@ func (b *Bot) Start() error {
 			return nil
 
 		case update := <-updates:
-			// Пытаемся добавить апдейт в очередь
-			select {
-			case b.updateQueue <- update:
-				// Апдейт успешно добавлен в очередь
-			default:
-				// Очередь переполнена - логируем предупреждение
-				b.logger.Warn("Update queue is full, dropping update",
-					slog.Int("queue_size", cap(b.updateQueue)),
-				)
-			}
+			b.enqueueUpdate(update)
 		}
+	}
+}
+
+// enqueueUpdate добавляет обновление в очередь
+func (b *Bot) enqueueUpdate(update tgbotapi.Update) {
+	select {
+	case b.updateQueue <- update:
+		b.logger.Debug("Update enqueued",
+			slog.Int("update_id", update.UpdateID))
+	default:
+		b.logger.Warn("Update queue is full, dropping update",
+			slog.Int("queue_size", cap(b.updateQueue)),
+			slog.Int("update_id", update.UpdateID))
 	}
 }
 
