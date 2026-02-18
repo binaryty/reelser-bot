@@ -803,39 +803,6 @@ func (h *Handler) editMessageText(chatID int64, messageID int, text string) erro
 	return err
 }
 
-// editMessageReplyMarkup редактирует inline keyboard сообщения
-func (h *Handler) editMessageReplyMarkup(chatID int64, messageID int, markup *tgbotapi.InlineKeyboardMarkup) error {
-	if markup == nil {
-		// Если markup nil, редактируем текст сообщения без keyboard (это удалит keyboard)
-		// Сначала получаем текущий текст сообщения
-		msg := tgbotapi.NewEditMessageText(chatID, messageID, "⏳ Загрузка...")
-		_, err := h.bot.Request(msg)
-		return err
-	}
-	edit := tgbotapi.NewEditMessageReplyMarkup(
-		chatID, messageID, *markup)
-	_, err := h.bot.Request(edit)
-	return err
-}
-
-// editMessageTextAndMarkup редактирует текст и keyboard
-func (h *Handler) editMessageTextAndMarkup(
-	chatID int64, messageID int, text string,
-	markup *tgbotapi.InlineKeyboardMarkup,
-) (*tgbotapi.Message, error) {
-	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
-	edit.ParseMode = ParseModeHTML
-	edit.ReplyMarkup = markup
-	_, err := h.bot.Request(edit)
-	if err != nil {
-		return nil, err
-	}
-	// Конвертируем APIResponse в Message
-	// Note: go-telegram-bot-api не предоставляет прямой способ получить Message из Request
-	// поэтому возвращаем nil
-	return nil, nil
-}
-
 // isBotMentioned проверяет, упомянут ли бот в сообщении
 func (h *Handler) isBotMentioned(message *tgbotapi.Message) bool {
 	if h.botUsername == "" || message == nil {

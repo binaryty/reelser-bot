@@ -264,11 +264,6 @@ func (s *Service) DownloadYouTubeWithQuality(
 	}, nil
 }
 
-// GetYouTubeQualities возвращает доступные качества для YouTube видео
-func (s *Service) GetYouTubeQualities(ctx context.Context, url string) ([]yt.VideoQuality, error) {
-	return s.ytDownloader.GetAvailableQualities(ctx, url)
-}
-
 // IsYouTubeURL проверяет, является ли URL ссылкой на YouTube
 func (s *Service) IsYouTubeURL(url string) bool {
 	return yt.IsValidURL(strings.ToLower(url))
