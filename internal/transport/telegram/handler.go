@@ -246,7 +246,7 @@ func (h *Handler) handleTextMessage(ctx context.Context, message *tgbotapi.Messa
 }
 
 // validateAndPrepareMessage валидирует сообщение и подготавливает текст
-func (h *Handler) validateAndPrepareMessage(message *tgbotapi.Message) (int64, string, bool) {
+func (h *Handler) validateAndPrepareMessage(message *tgbotapi.Message) (chatID int64, text string, ok bool) {
 	if message == nil {
 		h.logger.Warn("Message is nil in handleTextMessage")
 		return 0, "", false
@@ -262,8 +262,8 @@ func (h *Handler) validateAndPrepareMessage(message *tgbotapi.Message) (int64, s
 		return 0, "", false
 	}
 
-	chatID := message.Chat.ID
-	text := strings.TrimSpace(message.Text)
+	chatID = message.Chat.ID
+	text = strings.TrimSpace(message.Text)
 
 	// Обработка групповых чатов
 	if message.Chat.Type == ChatTypeGroup || message.Chat.Type == ChatTypeSupergroup {
@@ -280,7 +280,8 @@ func (h *Handler) validateAndPrepareMessage(message *tgbotapi.Message) (int64, s
 		}
 	}
 
-	return chatID, text, true
+	ok = true
+	return
 }
 
 // extractAndValidateURL извлекает и валидирует URL из текста
