@@ -278,7 +278,7 @@ func (d *Downloader) parseMediaInfo(output []byte) (*mediaInfo, error) {
 }
 
 // extractEntry извлекает данные из Entries или корня структуры
-func (d *Downloader) extractEntry(info *mediaInfo) mediaInfo {
+func (d *Downloader) extractEntry(info *mediaInfo) *mediaInfo {
 	entry := *info
 	if len(info.Entries) > 0 {
 		entry.Ext = info.Entries[0].Ext
@@ -287,11 +287,11 @@ func (d *Downloader) extractEntry(info *mediaInfo) mediaInfo {
 		entry.Width = info.Entries[0].Width
 		entry.Height = info.Entries[0].Height
 	}
-	return entry
+	return &entry
 }
 
 // determineMediaType определяет тип медиа по кодекам и размерам
-func (d *Downloader) determineMediaType(entry mediaInfo) MediaType {
+func (d *Downloader) determineMediaType(entry *mediaInfo) MediaType {
 	// Если есть видеокодек - это видео
 	if entry.Vcodec != common.NoneConst && entry.Vcodec != "" {
 		d.logger.Debug("Detected video by vcodec",
@@ -341,14 +341,6 @@ func (d *Downloader) detectTypeFromOutput(output string) (MediaType, error) {
 	}
 	d.logger.Warn("Could not detect media type from output, defaulting to video")
 	return MediaTypeVideo, fmt.Errorf("could not detect media type from output")
-}
-
-// min возвращает минимальное из двух целых чисел
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // getFormatString возвращает строку формата для yt-dlp

@@ -20,7 +20,7 @@ type Bot struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	updateWorkers int
-	updateQueue   chan tgbotapi.Update
+	updateQueue   chan *tgbotapi.Update
 }
 
 // NewBot создает новый экземпляр бота
@@ -61,7 +61,7 @@ func NewBot(
 		ctx:           ctx,
 		cancel:        cancel,
 		updateWorkers: updateWorkers,
-		updateQueue:   make(chan tgbotapi.Update, updateQueueSize),
+		updateQueue:   make(chan *tgbotapi.Update, updateQueueSize),
 	}
 
 	logger.Info("Bot initialized",
@@ -118,10 +118,10 @@ func (b *Bot) runUpdateWorker(id int) {
 }
 
 // processUpdate обрабатывает одно обновление
-func (b *Bot) processUpdate(update tgbotapi.Update) {
+func (b *Bot) processUpdate(update *tgbotapi.Update) {
 	b.logger.Debug("Processing update",
 		slog.Int("update_id", update.UpdateID))
-	b.handler.HandleUpdate(b.ctx, &update)
+	b.handler.HandleUpdate(b.ctx, update)
 }
 
 // receiveUpdates получает обновления от Telegram API
@@ -138,13 +138,13 @@ func (b *Bot) receiveUpdates() error {
 			return nil
 
 		case update := <-updates:
-			b.enqueueUpdate(update)
+			b.enqueueUpdate(&update)
 		}
 	}
 }
 
 // enqueueUpdate добавляет обновление в очередь
-func (b *Bot) enqueueUpdate(update tgbotapi.Update) {
+func (b *Bot) enqueueUpdate(update *tgbotapi.Update) {
 	select {
 	case b.updateQueue <- update:
 		b.logger.Debug("Update enqueued",
