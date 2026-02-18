@@ -221,71 +221,126 @@ func (h *Handler) handleCommand(message *tgbotapi.Message) {
 
 // handleTextMessage обрабатывает текстовые сообщения со ссылками
 func (h *Handler) handleTextMessage(ctx context.Context, message *tgbotapi.Message) {
-	if message == nil || message.Chat == nil {
-		h.logger.Warn("Invalid message in handleTextMessage")
+	chatID, text, ok := h.validateAndPrepareMessage(message)
+	if !ok {
 		return
 	}
 
-	if message.Text == "" {
+	url, ok := h.extractAndValidateURL(text, chatID)
+	if !ok {
 		return
 	}
 
-	chatID := message.Chat.ID
-	text := strings.TrimSpace(message.Text)
-
-	if message.Chat.Type == ChatTypeGroup || message.Chat.Type == ChatTypeSupergroup {
-		if !h.isBotMentioned(message) {
-			return
-		}
-
-		text = strings.TrimSpace(h.removeBotMentionFromText(text))
-		if text == "" {
-			return
-		}
-	}
-
-	if !h.containsURL(text) {
-		h.sendMessage(chatID, "❌ Пожалуйста, отправь валидную ссылку на видео.")
-		return
-	}
-
-	url := h.extractURL(text)
-	if url == "" {
-		h.sendMessage(chatID, "❌ Не удалось извлечь ссылку из сообщения.")
-		return
-	}
-
-	// Для YouTube показываем выбор качества
-	if h.downloader == nil {
-		h.logger.Error("downloader is nil")
+	if err := h.validateDownloader(); err != nil {
+		h.logger.Error("Downloader validation failed", slog.Any("error", err))
 		h.sendMessage(chatID, "❌ Внутренняя ошибка: сервис загрузки недоступен")
 		return
 	}
 
 	if h.downloader.IsYouTubeURL(url) {
-		statusMsg := h.sendMessage(chatID, "⏳ Анализирую видео...")
-		if statusMsg == nil {
-			h.logger.Error("Failed to send status message")
-			return
-		}
-		messageID := h.safeMessageID(statusMsg)
-
-		// Для Shorts сразу начинаем загрузку
-		if h.downloader.IsYouTubeShorts(url) {
-			h.editMsgSilent(chatID, messageID, "⏳ Загрузка Shorts...")
-			downloadCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-			defer cancel()
-			h.downloadYouTubeVideo(downloadCtx, chatID, messageID, url, "best")
-			return
-		}
-
-		// Для обычных видео показываем выбор качества
-		h.showQualitySelection(chatID, url, messageID)
+		h.processYouTubeDownload(ctx, chatID, url)
 		return
 	}
 
-	// Для других платформ используем стандартный процесс
+	h.processGenericDownload(ctx, chatID, url, message.MessageID)
+}
+
+// validateAndPrepareMessage валидирует сообщение и подготавливает текст
+func (h *Handler) validateAndPrepareMessage(message *tgbotapi.Message) (int64, string, bool) {
+	if message == nil {
+		h.logger.Warn("Message is nil in handleTextMessage")
+		return 0, "", false
+	}
+
+	if message.Chat == nil {
+		h.logger.Warn("Message chat is nil")
+		return 0, "", false
+	}
+
+	if message.Text == "" {
+		h.logger.Debug("Message text is empty")
+		return 0, "", false
+	}
+
+	chatID := message.Chat.ID
+	text := strings.TrimSpace(message.Text)
+
+	// Обработка групповых чатов
+	if message.Chat.Type == ChatTypeGroup || message.Chat.Type == ChatTypeSupergroup {
+		if !h.isBotMentioned(message) {
+			h.logger.Debug("Bot not mentioned in group chat",
+				slog.Int64("chat_id", chatID))
+			return 0, "", false
+		}
+
+		text = strings.TrimSpace(h.removeBotMentionFromText(text))
+		if text == "" {
+			h.logger.Debug("Text empty after removing mention")
+			return 0, "", false
+		}
+	}
+
+	return chatID, text, true
+}
+
+// extractAndValidateURL извлекает и валидирует URL из текста
+func (h *Handler) extractAndValidateURL(text string, chatID int64) (string, bool) {
+	if !h.containsURL(text) {
+		h.logger.Debug("No URL found in text",
+			slog.Int64("chat_id", chatID),
+			slog.String("text_preview", text[:min(len(text), 50)]))
+		h.sendMessage(chatID, "❌ Пожалуйста, отправь валидную ссылку на видео.")
+		return "", false
+	}
+
+	url := h.extractURL(text)
+	if url == "" {
+		h.logger.Warn("Failed to extract URL from text",
+			slog.Int64("chat_id", chatID))
+		h.sendMessage(chatID, "❌ Не удалось извлечь ссылку из сообщения.")
+		return "", false
+	}
+
+	h.logger.Info("URL extracted successfully",
+		slog.Int64("chat_id", chatID),
+		slog.String("url", url))
+
+	return url, true
+}
+
+// validateDownloader проверяет инициализацию downloader
+func (h *Handler) validateDownloader() error {
+	if h.downloader == nil {
+		return fmt.Errorf("downloader is nil")
+	}
+	return nil
+}
+
+// processYouTubeDownload обрабатывает загрузку YouTube видео
+func (h *Handler) processYouTubeDownload(ctx context.Context, chatID int64, url string) {
+	statusMsg := h.sendMessage(chatID, "⏳ Анализирую видео...")
+	if statusMsg == nil {
+		h.logger.Error("Failed to send status message",
+			slog.Int64("chat_id", chatID))
+		return
+	}
+
+	messageID := h.safeMessageID(statusMsg)
+
+	downloadCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	h.logger.Info("Starting YouTube download",
+		slog.Int64("chat_id", chatID),
+		slog.String("url", url))
+
+	h.downloadYouTubeVideo(downloadCtx, chatID, messageID, url, "best")
+}
+
+// processGenericDownload обрабатывает загрузку с других платформ
+func (h *Handler) processGenericDownload(ctx context.Context, chatID int64, url string, originalMsgID int) {
 	statusMsg := h.sendMessage(chatID, "⏳ Запрос принят, начинаю загрузку видео...")
+
 	downloadCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 
 	req := &downloadRequest{
@@ -295,7 +350,7 @@ func (h *Handler) handleTextMessage(ctx context.Context, message *tgbotapi.Messa
 		url:             url,
 		statusMessageID: h.safeMessageID(statusMsg),
 		source:          "direct_message",
-		originalMessage: message.MessageID,
+		originalMessage: originalMsgID,
 	}
 
 	if !h.enqueueDownload(req) {
@@ -630,20 +685,6 @@ func (h *Handler) handleCallbackQuery(ctx context.Context, callbackQuery *tgbota
 		return
 	}
 
-	// Проверяем инициализацию handler
-	if h.stateManager == nil {
-		h.logger.Error("stateManager is nil in handleCallbackQuery")
-		return
-	}
-	if h.downloader == nil {
-		h.logger.Error("downloader is nil in handleCallbackQuery")
-		return
-	}
-	if h.bot == nil {
-		h.logger.Error("bot is nil in handleCallbackQuery")
-		return
-	}
-
 	chatID := callbackQuery.Message.Chat.ID
 	messageID := callbackQuery.Message.MessageID
 	data := callbackQuery.Data
@@ -660,172 +701,9 @@ func (h *Handler) handleCallbackQuery(ctx context.Context, callbackQuery *tgbota
 		h.logger.Error("Failed to answer callback", slog.Any("error", err))
 	}
 
-	// Проверяем, что это callback для выбора качества
-	if !strings.HasPrefix(data, "yt_quality:") {
-		return
-	}
-
-	// Парсим callback data: "yt_quality:{video_id}:{quality}"
-	parts := strings.Split(data, ":")
-	if len(parts) != 3 {
-		return
-	}
-
-	_ = parts[1] // videoID не используется напрямую, хранится в state
-	quality := parts[2]
-
-	h.logger.Info("Parsed callback data", slog.String("quality", quality))
-
-	// Получаем сохраненное состояние
-	state, exists := h.stateManager.Get(chatID, messageID)
-	if !exists {
-		h.logger.Warn("State not found for callback",
-			slog.Int64("chat_id", chatID),
-			slog.Int("message_id", messageID))
-		h.editMsgSilent(chatID, messageID,
-			"❌ Время выбора качества истекло. Отправь ссылку заново.")
-		return
-	}
-
-	h.logger.Info("Found state", slog.String("video_url", state.VideoURL))
-
-	// Удаляем inline keyboard
-	if err := h.editMessageReplyMarkup(chatID, messageID, nil); err != nil {
-		h.logger.Error("Failed to remove keyboard", slog.Any("error", err))
-	}
-
-	// Для Shorts просто скачиваем без выбора качества
-	if h.downloader.IsYouTubeShorts(state.VideoURL) {
-		h.editMsgSilent(chatID, messageID, "⏳ Загрузка Shorts...")
-		h.downloadYouTubeVideo(ctx, chatID, messageID, state.VideoURL, "best")
-		return
-	}
-
-	// Показываем прогресс и начинаем загрузку
-	h.editMsgSilent(chatID, messageID, "⏳ Начинаю загрузку...")
-	h.downloadYouTubeVideo(ctx, chatID, messageID, state.VideoURL, quality)
-}
-
-// showQualitySelection показывает inline keyboard с выбором качества
-func (h *Handler) showQualitySelection(chatID int64, videoURL string, messageID int) {
-	// Проверяем инициализацию
-	if h.downloader == nil {
-		h.logger.Error("downloader is nil in showQualitySelection")
-		h.sendMessage(chatID, "❌ Внутренняя ошибка: сервис загрузки недоступен")
-		return
-	}
-	if h.stateManager == nil {
-		h.logger.Error("stateManager is nil in showQualitySelection")
-		h.sendMessage(chatID, "❌ Внутренняя ошибка: менеджер состояний недоступен")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Получаем доступные качества
-	qualities, err := h.downloader.GetYouTubeQualities(ctx, videoURL)
-	if err != nil {
-		h.logger.Error("Failed to get qualities", slog.String("url", videoURL), slog.Any("error", err))
-		h.sendMessage(chatID, "❌ Не удалось получить информацию о видео.")
-		return
-	}
-
-	if len(qualities) == 0 {
-		h.sendMessage(chatID, "❌ Нет доступных форматов для этого видео.")
-		return
-	}
-
-	// Создаем inline keyboard
-	var rows [][]tgbotapi.InlineKeyboardButton
-	videoID := h.downloader.GetYouTubeVideoID(videoURL)
-
-	// Фильтруем и группируем качества
-	qualityOptions := map[string]bool{"2160": false, "1440": false, "1080": false, "720": false, "480": false, "audio": false}
-
-	for _, q := range qualities {
-		if q.IsAudioOnly {
-			qualityOptions["audio"] = true
-		} else if q.Height >= 2160 {
-			qualityOptions["2160"] = true
-		} else if q.Height >= 1440 {
-			qualityOptions["1440"] = true
-		} else if q.Height >= 1080 {
-			qualityOptions["1080"] = true
-		} else if q.Height >= 720 {
-			qualityOptions["720"] = true
-		} else if q.Height >= 480 {
-			qualityOptions["480"] = true
-		}
-	}
-
-	// Создаем кнопки (от высокого к низкому качеству)
-	var buttons []tgbotapi.InlineKeyboardButton
-
-	if qualityOptions["2160"] {
-		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
-			"🎬 4K",
-			fmt.Sprintf("yt_quality:%s:2160", videoID),
-		))
-	}
-	if qualityOptions["1440"] {
-		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
-			"🎬 2K",
-			fmt.Sprintf("yt_quality:%s:1440", videoID),
-		))
-	}
-	if qualityOptions["1080"] {
-		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
-			"📺 1080p",
-			fmt.Sprintf("yt_quality:%s:1080", videoID),
-		))
-	}
-	if qualityOptions["720"] {
-		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
-			"📱 720p",
-			fmt.Sprintf("yt_quality:%s:720", videoID),
-		))
-	}
-	if qualityOptions["480"] {
-		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
-			"📱 480p",
-			fmt.Sprintf("yt_quality:%s:480", videoID),
-		))
-	}
-	if qualityOptions["audio"] {
-		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(
-			"🎵 Audio",
-			fmt.Sprintf("yt_quality:%s:audio", videoID),
-		))
-	}
-
-	// Разбиваем на ряды по 2 кнопки
-	for i := 0; i < len(buttons); i += 2 {
-		end := i + 2
-		if end > len(buttons) {
-			end = len(buttons)
-		}
-		rows = append(rows, buttons[i:end])
-	}
-
-	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
-
-	// Редактируем сообщение с inline keyboard
-	text := "🎥 Выберите качество видео:"
-	if _, err := h.editMessageTextAndMarkup(chatID, messageID, text, &keyboard); err != nil {
-		// Если редактирование не удалось, отправляем новое сообщение
-		msg := tgbotapi.NewMessage(chatID, text)
-		msg.ReplyMarkup = keyboard
-		sentMsg, err := h.bot.Send(msg)
-		if err != nil {
-			h.logger.Error("Failed to send quality selection", slog.Any("error", err))
-			return
-		}
-		messageID = sentMsg.MessageID
-	}
-
-	// Сохраняем состояние
-	h.stateManager.Set(chatID, messageID, videoURL)
+	// Callback обработка не требуется - выбор качества удален
+	h.logger.Info("Callback ignored - quality selection removed",
+		slog.String("data", data))
 }
 
 // downloadYouTubeVideo скачивает YouTube видео с выбранным качеством
@@ -961,34 +839,66 @@ func (h *Handler) editMessageTextAndMarkup(
 // isBotMentioned проверяет, упомянут ли бот в сообщении
 func (h *Handler) isBotMentioned(message *tgbotapi.Message) bool {
 	if h.botUsername == "" || message == nil {
+		h.logger.Debug("Bot username not set or message is nil")
 		return false
 	}
 
-	// Проверяем наличие текста
 	if message.Text == "" {
+		h.logger.Debug("Message text is empty")
 		return false
 	}
 
-	// Проверяем entities (упоминания через @username)
-	if len(message.Entities) > 0 {
-		for _, entity := range message.Entities {
-			if entity.Type == "mention" {
-				// Проверяем границы перед обращением к строке
-				if entity.Offset >= 0 && entity.Offset+entity.Length <= len(message.Text) {
-					mention := message.Text[entity.Offset : entity.Offset+entity.Length]
-					// Убираем @ и сравниваем
-					if strings.TrimPrefix(mention, "@") == h.botUsername {
-						return true
-					}
-				}
-			}
+	// Проверяем через entities (основной способ)
+	if h.checkMentionInEntities(message.Text, message.Entities) {
+		h.logger.Debug("Bot mentioned in entities", slog.String("username", h.botUsername))
+		return true
+	}
+
+	// Fallback: проверяем текст напрямую
+	if h.checkMentionInText(message.Text) {
+		h.logger.Debug("Bot mentioned in text", slog.String("username", h.botUsername))
+		return true
+	}
+
+	return false
+}
+
+// checkMentionInEntities проверяет упоминание бота через message entities
+func (h *Handler) checkMentionInEntities(text string, entities []tgbotapi.MessageEntity) bool {
+	if len(entities) == 0 {
+		return false
+	}
+
+	for i, entity := range entities {
+		if entity.Type != "mention" {
+			continue
+		}
+
+		// Проверяем границы entity
+		if entity.Offset < 0 || entity.Offset+entity.Length > len(text) {
+			h.logger.Warn("Invalid entity bounds",
+				slog.Int("entity_index", i),
+				slog.Int("offset", entity.Offset),
+				slog.Int("length", entity.Length),
+				slog.Int("text_length", len(text)))
+			continue
+		}
+
+		mention := text[entity.Offset : entity.Offset+entity.Length]
+		if strings.TrimPrefix(mention, "@") == h.botUsername {
+			return true
 		}
 	}
 
-	// Также проверяем текст напрямую (на случай, если entities не сработали)
-	text := strings.ToLower(message.Text)
-	botMention := "@" + strings.ToLower(h.botUsername)
-	return strings.Contains(text, botMention)
+	return false
+}
+
+// checkMentionInText проверяет упоминание бота через поиск в тексте
+func (h *Handler) checkMentionInText(text string) bool {
+	return strings.Contains(
+		strings.ToLower(text),
+		"@"+strings.ToLower(h.botUsername),
+	)
 }
 
 func (h *Handler) removeBotMentionFromText(text string) string {
